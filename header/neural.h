@@ -2,21 +2,23 @@
 #define NEURAL_H
 
 #include <vector>
+#include "layer.h"
+
 
 class NeuralNetwork {
 public:
-    NeuralNetwork();
+    NeuralNetwork(std::string f);
     ~NeuralNetwork();
-
-    void train(const std::vector<std::vector<double>>& inputs, const std::vector<std::vector<double>>& outputs);
-    std::vector<double> predict(const std::vector<double>& input) const;
+    void RunNetwork(Tensor input); //to start a run of the network,temporary placeholder
+    void SaveNetwork();
+    void SetLayers(std::vector<std::unique_ptr<Layer>> layers);
 
 private:
-    std::vector<std::vector<double>> weights;
-    std::vector<double> biases;
-
+    std::vector<std::unique_ptr<Layer>> layers;
+    std::string file; //file name used for storing tensors
     void initialize();
-    double activationFunction(double x) const;
+    void saveTensors();
+    void loadTensors();
 };
 
 #endif // NEURAL_H

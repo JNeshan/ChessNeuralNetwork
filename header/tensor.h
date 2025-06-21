@@ -1,20 +1,32 @@
+//tensor.h
 #ifndef TENSOR_H
 #define TENSOR_H
 
 #include <vector>
+#include <stdexcept>
+
+enum class TensorLocation {CPU, GPU};
 
 class Tensor {
 public:
-    Tensor(int p, int x, int y);
-    Tensor(int id); //to get preexisting tensor potentially with id
-    Tensor(Tensor* r);
+    Tensor(const std::vector<int>& dim);
+    Tensor(const std::vector<int>& dim, const std::vector<float>& data);
     ~Tensor();
-    void getVector(std::vector<float>& o);
+
+    void gpuSend(); //moves data into devices memory
+    void cpuSend();
+
+    float* cpuData(); //retrieves pointer to data
+    float* gpuData();
+
+    int size;
 
 private:
-    int planes, xD, yD;
+    std::vector<int> dimensions;
     std::vector<float> tensor;
+    TensorLocation device;
+    float* data;
     
 };
 
-#endif // TENSOR_H
+#endif

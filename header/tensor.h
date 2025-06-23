@@ -20,13 +20,14 @@ public:
     float* gpuData();
 
     int size;
+    std::vector<int> dimensions;
+
+
 
 private:
-    std::vector<int> dimensions;
     std::vector<float> tensor;
     TensorLocation device;
     float* data;
-    
 };
 
 #endif

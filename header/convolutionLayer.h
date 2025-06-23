@@ -5,7 +5,7 @@
 
 class ConvolutionLayer : Layer {
 public:
-  ConvolutionLayer(std::vector<int>& dim, int fCount, int fSize);
+  ConvolutionLayer(const std::vector<int>& dim, int fCount, int fSize);
   ~ConvolutionLayer();
   virtual void forward(Tensor T) override;
   virtual void backward() override;

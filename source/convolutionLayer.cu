@@ -29,13 +29,24 @@ struct CudaMembers{
   }
 };
 
-ConvolutionLayer::ConvolutionLayer(std::vector<int>& dim, int fCount, int fSize) : filterSize(fCount){
-  filters = Tensor(dim);
+ConvolutionLayer::ConvolutionLayer(const std::vector<int>& dim, int fCount, int fSize) : filterSize(fCount){
+  
+  std::vector<int> dimensions(1, fCount);
+  for(int i = 0; i < dim.size(); i++){
+    if(i+2 < dim.size()){ //last two dimensions give the frame
+      dimensions.push_back(dim[i]);
+    }
+    else{
+      dimensions.push_back(fSize);
+    }
+  }
+
+  filters = Tensor(dimensions);
   bias = Tensor({1, filters.size});
   CudaM = CudaMembers();
 }
 
 void ConvolutionLayer::forward(Tensor T){
-  cudnnHandle_t* hol = CudaM.handle;
+  
 }
 

@@ -3,19 +3,23 @@
 #define CONVOLUTIONLAYER_H
 #include "layer.h"
 
+struct CudaMembers;
+
+
 class ConvolutionLayer : Layer {
 public:
-  ConvolutionLayer(const std::vector<int>& dim, int fCount, int fSize);
+  ConvolutionLayer(const int fC, const int iC, const int fH, const int fW);
   ~ConvolutionLayer();
-  virtual void forward(Tensor T) override;
+  virtual Tensor forward(const Tensor& T) override;
   virtual void backward() override;
   void loadParameters(std::ifstream& iF);
   void saveParameters(std::ofstream& oF);
 
 private:
   int filterSize;
-  Tensor filters, bias; //filter and bias tensors
-  CudaMembers CudaM; //holds cuda member variables
+  Tensor output, filters, bias; //filter and bias tensors
+  CudaMembers *CudaM; //holds cuda member variables
+
 };
 
 #endif

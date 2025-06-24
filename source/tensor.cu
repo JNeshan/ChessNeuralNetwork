@@ -11,14 +11,21 @@ __inline__ void TryCuda(cudaError_t err){
 }
 
 Tensor::~Tensor() {
+  if(size == -1){ //blank tensor
+    return;
+  }
   if(device == TensorLocation::GPU){ //lazy delete
     TryCuda(cudaFree(data));
+    size = -1;
     return;
   }
   delete[] data;
 }
 
-Tensor::Tensor(const std::vector<int>& d){
+Tensor::Tensor() : size(-1), device(TensorLocation::CPU), data(nullptr), dimensions() {
+}
+
+Tensor::Tensor(const std::vector<int>& d, const TensorLocation loc = TensorLocation::CPU){
   if(d.size() == 0){
     throw std::invalid_argument("Tensor dimensions empty");
   }
@@ -31,11 +38,75 @@ Tensor::Tensor(const std::vector<int>& d){
     dimensions.push_back(dX);
     size *= dX;
   }
-  device = TensorLocation::CPU;
-  data = new float[size];
+  while(dimensions.size() < 4){
+    dimensions.insert(dimensions.begin(), {1});
+  }
+
+  if(loc == TensorLocation::CPU){
+    device = TensorLocation::CPU;
+    data = new float[size];
+  }
+  else{
+    device = TensorLocation::GPU;
+    TryCuda(cudaMalloc((void**)&data, size * sizeof(float)));
+  }
 }
 
-float* Tensor::cpuData(){
+Tensor::Tensor(Tensor&& r) noexcept : dimensions(r.dimensions), size(r.size), data(r.data), device(r.device){
+  r.data = nullptr;
+  r.size = 0;
+}
+
+Tensor& Tensor::operator=(Tensor&& r) noexcept{
+  if(this == &r){
+    return *this;
+  }
+  if(data){
+    if(device == TensorLocation::GPU){
+      TryCuda(cudaFree(&data));
+    }
+    else{
+      delete[] data;
+    }
+  }
+  dimensions = r.dimensions;
+  size = r.size;
+  device = r.device;
+  data = r.data;
+  r.data = nullptr;
+  r.size = 0;
+  return *this;
+}
+
+Tensor& Tensor::operator=(const Tensor& r){
+  if(this == &r){
+    return *this;
+  }
+  
+  if(data != nullptr){
+    if(device == TensorLocation::GPU){
+      TryCuda(cudaFree(data));
+    }
+    else{
+      delete[] data;
+    }
+  }
+
+  size = r.size;
+  device = r.device;
+  dimensions = r.dimensions;
+  data = nullptr;
+  if(device == TensorLocation::GPU){
+    TryCuda(cudaMalloc((void**)&data, size * sizeof(float)));
+    TryCuda(cudaMemcpy(data, r.data, size * sizeof(float), cudaMemcpyDeviceToDevice));
+  }
+  else{
+    data = new float[size];
+    memcpy(data, r.data, size * sizeof(float));
+  }
+}
+
+float* Tensor::cpuData() const{
   if(device == TensorLocation::GPU){
     throw std::invalid_argument("Data stored on GPU");
   }
@@ -45,7 +116,7 @@ float* Tensor::cpuData(){
   return data;
 }
 
-float* Tensor::gpuData(){
+float* Tensor::gpuData() const{
   if(device == TensorLocation::CPU){
     throw std::invalid_argument("Data stored on CPU");
   }
@@ -70,6 +141,7 @@ void Tensor::cpuSend(){
 }
 
 void Tensor::gpuSend(){
+
   if(device == TensorLocation::GPU){
     return; //already in gpu memory
   }
@@ -83,4 +155,24 @@ void Tensor::gpuSend(){
   delete[] data;
   data = tmpData;
   device = TensorLocation::GPU;
+}
+
+void Tensor::flatten(){
+  if(dimensions[0] == 1 && dimensions[1] == 1){
+    return; //already 2d
+  }
+  int s = size / dimensions[0];
+  dimensions[2] = dimensions[0];
+  dimensions[3] = size / dimensions[0];
+  dimensions[0] = 1; dimensions[1] = 1;
+  return;
+}
+
+void Tensor::reshape(const std::vector<int>& dim){
+  int s = 1;
+  for(auto d : dim) s *= d;
+  if(s != size){
+    throw("Invalid reshape size");
+  }
+  dimensions = dim;
 }

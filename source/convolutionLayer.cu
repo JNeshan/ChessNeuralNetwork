@@ -18,35 +18,77 @@ __inline__ void TryCuda(cudnnStatus_t err){
 }
 
 struct CudaMembers{
-  cudnnHandle_t* handle;
-  
+  cudnnHandle_t handle;
   cudnnTensorDescriptor_t inputD, outputD, biasD;
   cudnnFilterDescriptor_t filterD;
   cudnnConvolutionDescriptor_t convoD;
 
   CudaMembers(){
-    TryCuda(cudnnCreate(handle));
+    TryCuda(cudnnCreate(&handle));
+    TryCuda(cudnnCreateTensorDescriptor(&inputD));
+    TryCuda(cudnnCreateTensorDescriptor(&outputD));
+    TryCuda(cudnnCreateTensorDescriptor(&biasD));
+    TryCuda(cudnnCreateConvolutionDescriptor(&convoD));
   }
+  ~CudaMembers(){
+  };
 };
 
-ConvolutionLayer::ConvolutionLayer(const std::vector<int>& dim, int fCount, int fSize) : filterSize(fCount){
-  
-  std::vector<int> dimensions(1, fCount);
-  for(int i = 0; i < dim.size(); i++){
-    if(i+2 < dim.size()){ //last two dimensions give the frame
-      dimensions.push_back(dim[i]);
-    }
-    else{
-      dimensions.push_back(fSize);
-    }
+ConvolutionLayer::ConvolutionLayer(const int fC, const int iC, const int fH, const int fW) : bias({fC}, TensorLocation::GPU), filters({fC, iC, fW, fH}, TensorLocation::GPU) {
+  CudaM = new CudaMembers();
+  TryCuda(cudnnSetFilter4dDescriptor(CudaM->filterD, CUDNN_DATA_FLOAT, CUDNN_TENSOR_NCHW, fC, iC, fH, fW));
+  TryCuda(cudnnSetTensor4dDescriptor(CudaM->biasD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, 1, fC, 1, 1));
+  TryCuda(cudnnSetConvolution2dDescriptor(CudaM->convoD, 1, 1, 1, 1, 1, 1, CUDNN_CONVOLUTION, CUDNN_DATA_FLOAT));
+}
+
+Tensor ConvolutionLayer::forward(const Tensor& T){
+  int n = T.dimensions[0], c = (T.dimensions[1] / ((int)pow(8, 4 - T.dimensions.size()))), 
+  h = 8, w = 8;
+
+  input = Tensor(T);
+  if(input.dimensions.size() != 4){
+    throw("Convolution bad input");
   }
 
-  filters = Tensor(dimensions);
-  bias = Tensor({1, filters.size});
-  CudaM = CudaMembers();
-}
-
-void ConvolutionLayer::forward(Tensor T){
+  //setting descriptors, calculating output dimensions
+  TryCuda(cudnnSetTensor4dDescriptor(CudaM->inputD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, n, c, h, w));
+  TryCuda(cudnnGetConvolution2dForwardOutputDim(CudaM->convoD, CudaM->inputD, CudaM->filterD, &n, &c, &h, &w));
+  TryCuda(cudnnSetTensor4dDescriptor(CudaM->outputD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, n, c, h, w));
+  Tensor output({n, c, h, w}, TensorLocation::GPU);
+  //variables for convolution algorithm and workspace memory
+  cudnnConvolutionFwdAlgoPerf_t potential;
+  cudnnConvolutionFwdAlgo_t algo;
+  int algoCount = 0;
+  size_t wsSize = 0;
+  void* workspace = nullptr;
+  float a = 1.0f, b = 1.0f, b2 = 0.0f; //alpha betas
   
+  TryCuda(cudnnFindConvolutionForwardAlgorithm(CudaM->handle, CudaM->inputD, CudaM->filterD, CudaM->convoD, 
+                                              CudaM->outputD, 1, &algoCount, &potential));
+  if(algoCount == 0){
+    throw std::runtime_error("cuDNN failed to find convolution");
+  }
+  algo = potential.algo;
+
+  TryCuda(cudnnGetConvolutionForwardWorkspaceSize(CudaM->handle, CudaM->inputD, CudaM->filterD, 
+                                                  CudaM->convoD, CudaM->outputD, algo, &wsSize));
+  if(wsSize > 0){
+    TryCuda(cudaMalloc((void**)&workspace, wsSize));
+  }
+  //performs convolution
+  TryCuda(cudnnConvolutionForward(CudaM->handle, &a, CudaM->inputD, T.gpuData(), CudaM->filterD, 
+                          filters.gpuData(), CudaM->convoD, algo, workspace, 
+                          wsSize, &b, CudaM->outputD, output.gpuData()));
+  //freeing memory
+  if(workspace != nullptr){
+    TryCuda(cudaFree(workspace));
+  }
+
+  //performs bias addition
+  TryCuda(cudnnAddTensor(CudaM->handle, &a, CudaM->biasD, bias.gpuData(), &b2, CudaM->outputD, output.gpuData()));
+  return output;
 }
 
+ConvolutionLayer::~ConvolutionLayer(){
+  delete CudaM;
+}

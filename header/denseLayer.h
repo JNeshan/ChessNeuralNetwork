@@ -3,15 +3,18 @@
 
 #include "layer.h"
 
+struct CudaMembers;
+
 class DenseLayer : public Layer {
 public:
-  DenseLayer();
+  DenseLayer(const int f, const int n);
   virtual ~DenseLayer();
-  virtual void forward(Tensor T) override;
+  virtual Tensor forward(const Tensor& T) override;
   void loadParameters(std::ifstream iF);
 
 private:
   Tensor weight, bias;
+  CudaMembers *CudaM;
 };
 
 #endif

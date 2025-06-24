@@ -7,18 +7,21 @@
 #include <stdexcept>
 #include <vector>
 
-struct CudaMembers;
 
 class Layer {
 public:
     Layer();
     virtual ~Layer();
 
-    virtual void forward(Tensor T) = 0;
+    virtual Tensor forward(const Tensor& T) = 0;
     virtual void backward() = 0;
-    
-private:
-  
+    static int alpha, beta;
+    Tensor input;
+    const float mx = 1.0f, mn = 0.0f;
+    void genTensorData();
+    void loadTensor(std::ifstream& iF);
+
+
 };
 
 #endif // LAYER_H

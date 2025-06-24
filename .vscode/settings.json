@@ -65,6 +65,12 @@
     "xlocnum": "cpp",
     "xloctime": "cpp",
     "fstream": "cpp",
-    "iostream": "cpp"
+    "iostream": "cpp",
+    "algorithm": "cpp",
+    "array": "cpp",
+    "map": "cpp",
+    "random": "cpp",
+    "set": "cpp",
+    "xtree": "cpp"
   }
 }

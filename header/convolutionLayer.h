@@ -11,15 +11,15 @@ public:
   ConvolutionLayer(const int fC, const int iC, const int fH, const int fW);
   ~ConvolutionLayer();
   virtual Tensor forward(const Tensor& T) override;
-  virtual void backward() override;
+  virtual std::pair<std::vector<Tensor*>, std::vector<Tensor*>> backward(const Tensor& gradient) override;
   void loadParameters(std::ifstream& iF);
   void saveParameters(std::ofstream& oF);
 
 private:
   int filterSize;
-  Tensor output, filters, bias; //filter and bias tensors
+  std::pair<std::vector<Tensor*>, std::vector<Tensor*>> tensors;
+  Tensor output, filters, bias, iGrad, fGrad, bGrad; //filter and bias tensors
   CudaMembers *CudaM; //holds cuda member variables
-
 };
 
 #endif

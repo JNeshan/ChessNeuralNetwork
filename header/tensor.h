@@ -31,12 +31,14 @@ public:
     //public member variables
     int size;
     std::vector<int> dimensions;
+    //const int dSize;
 
 
 
 private:
     TensorLocation device;
     float* data;
+    
 };
 
 #endif

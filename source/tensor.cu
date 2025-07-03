@@ -22,8 +22,7 @@ Tensor::~Tensor() {
   delete[] data;
 }
 
-Tensor::Tensor() : size(-1), device(TensorLocation::CPU), data(nullptr), dimensions() {
-}
+Tensor::Tensor() : size(-1), device(TensorLocation::CPU), data(nullptr), dimensions() {}
 
 Tensor::Tensor(const std::vector<int>& d, const TensorLocation loc = TensorLocation::CPU){
   if(d.size() == 0){
@@ -38,8 +37,9 @@ Tensor::Tensor(const std::vector<int>& d, const TensorLocation loc = TensorLocat
     dimensions.push_back(dX);
     size *= dX;
   }
+
   while(dimensions.size() < 4){
-    dimensions.insert(dimensions.begin(), {1});
+    dimensions.push_back(1);
   }
 
   if(loc == TensorLocation::CPU){

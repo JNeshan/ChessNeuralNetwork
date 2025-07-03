@@ -50,7 +50,7 @@ void NeuralNetwork::RunNetwork(Tensor& input){
     }
     else if(layTypes[i] == LayerType::RELU){
       int n = T.dimensions[0];
-      std::vector<int> dim(4 - T.dimensions.size(), 1);
+      std::vector<int> dim(4 - T.dimensions.size(), 1); //fix
       for(auto iT : T.dimensions){
         dim.push_back(iT);
       }

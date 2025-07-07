@@ -52,7 +52,7 @@ SoftmaxLayer::~SoftmaxLayer(){
 Tensor SoftmaxLayer::forward(const Tensor& T){
   output = Tensor({1, 1, input.dimensions[0], outFeat}, TensorLocation::GPU);
   if(output.size != T.size){
-    throw("Bad policy head input");
+    throw("Bad softmax input");
   }
   input = Tensor(T);
   iGrad = Tensor(input.dimensions, TensorLocation::GPU);
@@ -63,12 +63,11 @@ Tensor SoftmaxLayer::forward(const Tensor& T){
 }
 
 std::pair<std::vector<Tensor*>, std::vector<Tensor*>> SoftmaxLayer::backward(const Tensor& gradient){
-
+  
   Tensor grad(input.dimensions, TensorLocation::GPU);
   TryCuda(cudnnSoftmaxBackward(CudaM->handle, CUDNN_SOFTMAX_FAST, CUDNN_SOFTMAX_MODE_INSTANCE, &mx, CudaM->outputD, 
                               output.gpuData(), CudaM->outputD, gradient.gpuData(), &mn, CudaM->inputD, iGrad.gpuData()));
   
   CudaM->resetTemp();
   return {{&input}, {&iGrad}};
-
 }

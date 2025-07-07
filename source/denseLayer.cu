@@ -36,7 +36,6 @@ struct CudaMembers{
     cudnnCreateTensorDescriptor(&outputD);
     cudnnCreateTensorDescriptor(&biasD);
     TryCuda(cudnnCreateTensorDescriptor(&gradientD));
-
   }
 
   ~CudaMembers(){
@@ -56,12 +55,12 @@ struct CudaMembers{
 __global__ void bGradKernel(const float* grad, float* out, const int m, const int n){
   extern __shared__ float shared[]; //initializes space for shared memory
   const int colIdx = blockIdx.x; //column index the thread block works on
-  int thId = threadIdx.x; //threads relative id
+  int thId = threadIdx.x; //threads relative id to its block
   shared[thId] = 0.0f; //initializing shared memory values
   for(int row = thId; row < m; row++){ //adding gradient values to shared memory
     shared[thId] += grad[row * n + colIdx];
   }
-  __syncthreads();
+  __syncthreads(); //waits for all threads to finish
 
   for(int str = blockDim.x / 2; str > 0; str >>= 1){ //summing each column, applying half to the other half each time
     if(thId < str){ //indicates which threads are still allowed

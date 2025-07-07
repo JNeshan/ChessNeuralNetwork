@@ -1,25 +1,9 @@
 #include <cuda_runtime.h>
-#include <cudnn.h>
-#include <cublas.h>
 #include "header/optimizer.h"
 
 __inline__ void TryCuda(cudaError_t err){
   if(err != cudaSuccess){
     fprintf(stderr, "CUDA Error in %s at line %d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err));
-      exit(EXIT_FAILURE);
-  }
-}
-
-__inline__ void TryCuda(cublasStatus_t err){
-  if(err != CUBLAS_STATUS_SUCCESS){
-    fprintf(stderr, "cuBLAS Error in %s at line %d: %s\n", __FILE__, __LINE__, cublasGetStatusString(err));
-      exit(EXIT_FAILURE);
-  }
-}
-
-__inline__ void TryCuda(cudnnStatus_t err){
-  if(err != CUDNN_STATUS_SUCCESS){
-    fprintf(stderr, "CUDNN Error in %s at line %d: %s\n", __FILE__, __LINE__, cudnnGetErrorString(err));
       exit(EXIT_FAILURE);
   }
 }
@@ -47,16 +31,16 @@ struct CudaMembers{
   }
 };
 
-
 Optimizer::Optimizer(const float rate) : lR(rate){}
 
 void Optimizer::optimize(const Tensor& in, const Tensor& grad){
-  const int m = in.dimensions[0], n =  in.size / m;
-  int thCount = 256;
-  while(thCount < m){
+  const int m = in.dimensions[0], n =  in.size / m; //row and column dimensions
+  int thCount = 256; //number of threads per thread block
+  while(thCount < m){ //number of threads must be at least the number of elements per row
     thCount *= 2;
   }
-  dim3 gridDim(m);
+  dim3 gridDim(m); //variables used by the cuda kernel for thread blocks dimensions and counts
   dim3 blockDim(thCount);
-  GradDescentKernel<<<gridDim, blockDim>>>(grad.gpuData(), in.gpuData(), lR, m, n);
+  GradDescentKernel<<<gridDim, blockDim>>>(grad.gpuData(), in.gpuData(), lR, m, n); //calls the kernel to perform the optimization operation with tensor and its gradient
+  return;
 }

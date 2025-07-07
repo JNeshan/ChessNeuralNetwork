@@ -20,7 +20,7 @@ __inline__ void TryCuda(cudnnStatus_t err){
 
 struct CudaMembers{
   cudnnHandle_t handle;
-  cudnnTensorDescriptor_t inputD, outputD, biasD, gradientD;
+  cudnnTensorDescriptor_t inputD, outputD, biasD;
   cudnnFilterDescriptor_t filterD;
   cudnnConvolutionDescriptor_t convoD;
 
@@ -104,44 +104,42 @@ Tensor ConvolutionLayer::forward(const Tensor& T){
 
 std::pair<std::vector<Tensor*>, std::vector<Tensor*>> ConvolutionLayer::backward(const Tensor& gradient){
   //initializing gradient tensors and descriptor parameters
-  Tensor grad(input.dimensions, TensorLocation::GPU);
-  Tensor biasGrad(input.dimensions, TensorLocation::GPU);
+  iGrad = Tensor(input.dimensions, TensorLocation::GPU);
+  bGrad = Tensor(bias.dimensions, TensorLocation::GPU);
+  fGrad = Tensor(filters.dimensions, TensorLocation::GPU);
+
   cudnnConvolutionBwdFilterAlgoPerf_t potential;
   cudnnConvolutionBwdFilterAlgo_t algo;
   cudnnConvolutionBwdDataAlgoPerf_t dataPot;
   cudnnConvolutionBwdDataAlgo_t dataAlgo;
   int algoCount = 0;
-  size_t wsSize = 0;
+  size_t wsSize = 0, wsSizeTmp;
   void* workspace = nullptr;
   //applies back propagation through the convolutions bias
-  TryCuda(cudnnConvolutionBackwardBias(CudaM->handle, &mx, CudaM->outputD, gradient.gpuData(), &mn, CudaM->outputD, bias.gpuData()));
+  TryCuda(cudnnConvolutionBackwardBias(CudaM->handle, &mx, CudaM->outputD, gradient.gpuData(), &mn, CudaM->outputD, bGrad.gpuData()));
   TryCuda(cudnnFindConvolutionBackwardDataAlgorithm(CudaM->handle, CudaM->filterD, CudaM->outputD, CudaM->convoD, CudaM->inputD, 1, &algoCount, &dataPot));
-  TryCuda(cudnnFindConvolutionBackwardFilterAlgorithm(CudaM->handle, CudaM->inputD, CudaM->gradientD, CudaM->convoD, CudaM->filterD, 1, &algoCount, &potential));
+  TryCuda(cudnnFindConvolutionBackwardFilterAlgorithm(CudaM->handle, CudaM->inputD, CudaM->outputD, CudaM->convoD, CudaM->filterD, 1, &algoCount, &potential));
   dataAlgo = dataPot.algo;
   algo = potential.algo;
   TryCuda(cudnnGetConvolutionBackwardDataWorkspaceSize(CudaM->handle, CudaM->filterD, CudaM->outputD, CudaM->convoD, CudaM->inputD, dataAlgo, &wsSize));
+  TryCuda(cudnnGetConvolutionBackwardFilterWorkspaceSize(CudaM->handle, CudaM->inputD, CudaM->outputD, CudaM->convoD, CudaM->filterD, algo, &wsSizeTmp));
+  wsSize = std::max(wsSize, wsSizeTmp);
   if(wsSize > 0){
     TryCuda(cudaMalloc((void**)&workspace, wsSize));
   }
+
   TryCuda(cudnnConvolutionBackwardData(CudaM->handle, &mx, CudaM->filterD, filters.gpuData(), CudaM->outputD, 
                                       gradient.gpuData(), CudaM->convoD, dataAlgo, workspace, wsSize, &mn, 
-                                      CudaM->inputD, grad.gpuData()));
-  if(workspace != nullptr){
-    TryCuda(cudaFree(workspace));
-    workspace = nullptr;
-  }
-  TryCuda(cudnnGetConvolutionBackwardFilterWorkspaceSize(CudaM->handle, CudaM->inputD, CudaM->gradientD, CudaM->convoD, CudaM->filterD, algo, &wsSize));
-   if(wsSize > 0){
-    TryCuda(cudaMalloc((void**)&workspace, wsSize));
-  }
+                                      CudaM->inputD, iGrad.gpuData()));
+  
   TryCuda(cudnnConvolutionBackwardFilter(CudaM->handle, &mx, CudaM->inputD, input.gpuData(), CudaM->outputD, gradient.gpuData(), 
-                                        CudaM->convoD, algo, workspace, wsSize, &mn, CudaM->filterD, filters.gpuData()));
+                                        CudaM->convoD, algo, workspace, wsSize, &mn, CudaM->filterD, fGrad.gpuData()));
   if(workspace != nullptr){
     TryCuda(cudaFree(workspace));
     workspace = nullptr;
   }
 
-  return ;
+  return {{&input, &filters, &bias}, {&iGrad, &fGrad, &bGrad}}; //fix output
 }
 
 ConvolutionLayer::~ConvolutionLayer(){

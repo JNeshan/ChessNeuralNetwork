@@ -157,17 +157,6 @@ void Tensor::gpuSend(){
   device = TensorLocation::GPU;
 }
 
-void Tensor::flatten(){
-  if(dimensions[0] == 1 && dimensions[1] == 1){
-    return; //already 2d
-  }
-  int s = size / dimensions[0];
-  dimensions[2] = dimensions[0];
-  dimensions[3] = size / dimensions[0];
-  dimensions[0] = 1; dimensions[1] = 1;
-  return;
-}
-
 void Tensor::reshape(const std::vector<int>& dim){
   int s = 1;
   for(auto d : dim) s *= d;

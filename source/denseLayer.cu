@@ -3,6 +3,8 @@
 #include <cublas.h>
 #include <stdexcept>
 
+//should be done
+
 __inline__ void TryCuda(cudaError_t err){
   if(err != cudaSuccess){
     fprintf(stderr, "CUDA Error in %s at line %d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err));
@@ -101,10 +103,10 @@ std::pair<Tensor, std::unique_ptr<ForwardCache>> DenseLayer::forward(const Tenso
 
 std::pair<Tensor, std::unique_ptr<BackwardCache>> DenseLayer::backward(const Tensor& gradient, const ForwardCache& fCache){
   auto ptr = std::make_unique<BackwardCache>();
-  ptr->trainingTensors(std::make_pair(&weight, Tensor(weight.dimensions, TensorLocation::GPU, 2)));
-  ptr->trainingTensors(std::make_pair(&bias, Tensor(bias.dimensions, TensorLocation::GPU, 2)));
+  ptr->trainingTensors.push_back(std::make_pair(&weight, Tensor(weight.dimensions, TensorLocation::GPU, 2)));
+  ptr->trainingTensors.push_back(std::make_pair(&bias, Tensor(bias.dimensions, TensorLocation::GPU, 2)));
 
-  Tensor* input = &fCache.T, wGrad = &ptr->trainingTensors[0].first, bGrad = &ptr->trainingTensors[1].first;
+  Tensor* input = &fCache.T, wGrad = &ptr->trainingTensors[0].first(), bGrad = &ptr->trainingTensors[1].first();
   Tensor iGrad(input->dimensions, TensorLocation::GPU, input->n);
   //calculates the input gradient
   TryCuda(cublasSgemm_v2(CudaM->handle, CUBLAS_OP_T, CUBLAS_OP_N, gradient.dimensions[0], weight.dimensions[0], 

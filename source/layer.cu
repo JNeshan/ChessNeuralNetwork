@@ -1,2 +1,1 @@
-struct CudaMembers{};
-
+#include "header/layer.h"

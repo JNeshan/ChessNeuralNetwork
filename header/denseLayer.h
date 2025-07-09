@@ -9,12 +9,12 @@ class DenseLayer : public Layer {
 public:
   DenseLayer(const int f, const int n);
   virtual ~DenseLayer();
-  virtual Tensor forward(const Tensor& T) override;
-  virtual std::pair<std::vector<Tensor*>, std::vector<Tensor*>> backward(const Tensor& gradient) override;
+  virtual std::pair<Tensor, std::unique_ptr<ForwardCache>> forward(const Tensor& T) override;
+  virtual std::pair<Tensor, std::unique_ptr<BackwardCache>> backward(const Tensor& gradient, const ForwardCache& fCache) override;
   void loadParameters(std::ifstream iF);
 
 private:
-  Tensor weight, bias, input, iGrad, wGrad, bGrad;
+  Tensor weight, bias, wGrad, bGrad;
   CudaMembers *CudaM;
 };
 

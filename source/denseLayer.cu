@@ -1,7 +1,6 @@
 #include "header/denseLayer.h"
 #include <cuda_runtime.h>
 #include <cublas.h>
-#include <cudnn.h>
 #include <stdexcept>
 
 __inline__ void TryCuda(cudaError_t err){
@@ -27,41 +26,41 @@ __inline__ void TryCuda(cudnnStatus_t err){
 
 struct CudaMembers{
   cublasHandle_t handle;
-  cudnnHandle_t nHandle;
-  cudnnTensorDescriptor_t outputD, biasD, gradientD;
 
   CudaMembers(){
     cublasCreate_v2(&handle);
-    cudnnCreate(&nHandle);
-    cudnnCreateTensorDescriptor(&outputD);
-    cudnnCreateTensorDescriptor(&biasD);
-    TryCuda(cudnnCreateTensorDescriptor(&gradientD));
+  }
+
+  CudaMembers(const CudaMembers& r){
+    this.handle = r.handle;
   }
 
   ~CudaMembers(){
     TryCuda(cublasDestroy_v2(handle));
-    TryCuda(cudnnDestroyTensorDescriptor(outputD));
-    TryCuda(cudnnDestroyTensorDescriptor(biasD));
-    TryCuda(cudnnDestroy(nHandle));
-    TryCuda(cudnnDestroyTensorDescriptor(gradientD));
   };
 
-  void resetTemp(){
-    TryCuda(cudnnDestroyTensorDescriptor(outputD));
-    TryCuda(cudnnCreateTensorDescriptor(&outputD));
-  }
 };
-//uses
+
+__global__ void biasAddKernel(const float* bias, float* out, const int n, const int m){
+  const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if(idx < n * m){
+    out[idx] += bias[idx % n];
+  }
+}
+
 __global__ void bGradKernel(const float* grad, float* out, const int m, const int n){
   extern __shared__ float shared[]; //initializes space for shared memory
   const int colIdx = blockIdx.x; //column index the thread block works on
-  int thId = threadIdx.x; //threads relative id to its block
+  const int thId = threadIdx.x; //threads relative id to its block
   shared[thId] = 0.0f; //initializing shared memory values
-  for(int row = thId; row < m; row++){ //adding gradient values to shared memory
+  for(int row = thId; row < m; row += blockDim.x){ //adding gradient values to shared memory
     shared[thId] += grad[row * n + colIdx];
   }
   __syncthreads(); //waits for all threads to finish
-
+  //essentially starts by cutting off half the active threads, only the lower half index of each block starts up to thread th0, 
+  //then each active thread adds the value k indices away from their own, where k is 1 plus the index of th0.
+  //This then continues to merge down each column until the final two indices containing the sums of their halfs of the vector merge for that
+  //rows gradient
   for(int str = blockDim.x / 2; str > 0; str >>= 1){ //summing each column, applying half to the other half each time
     if(thId < str){ //indicates which threads are still allowed
       shared[thId] += shared[thId + str];
@@ -69,53 +68,59 @@ __global__ void bGradKernel(const float* grad, float* out, const int m, const in
     __syncthreads(); //waits to sync each iteration
   }
 
-  if(thId == 0){ //one thread sets the sum of its column
+  if(thId == 0){ //the last thread sets the columns value
     out[colIdx] = shared[0]; 
   }
 }
 
-DenseLayer::DenseLayer(const int f, const int n) : weight({f, n}, TensorLocation::GPU), bias({1, n}, TensorLocation::GPU){
+ForwardCache::ForwardCache(const Tensor& tensor, CudaMembers* c) : T(tensor), CudaM(nullptr);
+
+BackwardCache::BackwardCache() : trainingTensors(0);
+
+DenseLayer::DenseLayer(const int f, const int n) : weight({f, n}, TensorLocation::GPU), bias({n}, TensorLocation::GPU){
   CudaM = new CudaMembers();
-  TryCuda(cudnnSetTensor4dDescriptor(CudaM->biasD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, n, 1, 1, 1));
 }
 
-
-Tensor DenseLayer::forward(const Tensor& T){
+std::pair<Tensor, std::unique_ptr<ForwardCache>> DenseLayer::forward(const Tensor& T){
+  if(T.n != 2){
+    throw("Wrong dimensional tensor for dense layer.")
+  }
   if(T.dimensions[1] != weight.dimensions[0]){
     throw("Weight and input tensor dimensions incompatible for multiplication");
   }
-  input = T;
   Tensor output({T.dimensions[0], weight.dimensions[1]}, TensorLocation::GPU);
-  TryCuda(cudnnSetTensor4dDescriptor(CudaM->outputD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, output.dimensions[0], output.dimensions[1], 1, 1));
-  TryCuda(cublasSgemm_v2(CudaM->handle, CUBLAS_OP_N, CUBLAS_OP_N, weight.dimensions[1], input.dimensions[0], input.dimensions[1],
-                       &mx, weight.gpuData(), weight.dimensions[1], input.gpuData(), input.dimensions[1], &mn, output.gpuData(), output.dimensions[2]));
-  TryCuda(cudnnAddTensor(CudaM->nHandle, &mx, CudaM->outputD, output.gpuData(), &mx, CudaM->biasD, bias.gpuData()));
-  return output;
+  TryCuda(cublasSgemm_v2(CudaM->handle, CUBLAS_OP_N, CUBLAS_OP_N, weight.dimensions[1], T.dimensions[0], T.dimensions[1],
+             &mx, weight.gpuData(), weight.dimensions[1], T.gpuData(), T.dimensions[1], &mn, output.gpuData(), output.dimensions[1]));
+  const int thCount = 256, m = (output.size + thCount - 1) / thCount;
+  dim3 blockDim(thCount);
+  dim3 gridDim(m);
+  biasAddKernel<<<gridDim, blockDim>>>(bias.gpuData(), output.gpuData(), output.dimensions[0], output.dimensions[1]);
+  auto ptr = std::make_unique<ForwardCache>(T, nullptr);
+  return {std::move(output),std::move(ptr)};
 }
 
-std::pair<std::vector<Tensor*>, std::vector<Tensor*>> DenseLayer::backward(const Tensor& gradient){
-  iGrad = Tensor (input.dimensions, TensorLocation::GPU);
-  wGrad = Tensor (weight.dimensions, TensorLocation::GPU);
-  bGrad = Tensor (bias.dimensions, TensorLocation::GPU);
+std::pair<Tensor, std::unique_ptr<BackwardCache>> DenseLayer::backward(const Tensor& gradient, const ForwardCache& fCache){
+  auto ptr = std::make_unique<BackwardCache>();
+  ptr->trainingTensors(std::make_pair(&weight, Tensor(weight.dimensions, TensorLocation::GPU, 2)));
+  ptr->trainingTensors(std::make_pair(&bias, Tensor(bias.dimensions, TensorLocation::GPU, 2)));
 
+  Tensor* input = &fCache.T, wGrad = &ptr->trainingTensors[0].first, bGrad = &ptr->trainingTensors[1].first;
+  Tensor iGrad(input->dimensions, TensorLocation::GPU, input->n);
+  //calculates the input gradient
   TryCuda(cublasSgemm_v2(CudaM->handle, CUBLAS_OP_T, CUBLAS_OP_N, gradient.dimensions[0], weight.dimensions[0], 
                         gradient.dimensions[1], &mx, gradient.gpuData(), gradient.dimensions[1], weight.gpuData(), 
                         weight.dimensions[1], &mn, iGrad.gpuData(), iGrad.dimensions[1]));
-  //calculates weight gradient by 
-  TryCuda(cublasSgemm_v2(CudaM->handle, CUBLAS_OP_N, CUBLAS_OP_T, input.dimensions[1], gradient.dimensions[1], 
-                        input.dimensions[0], &mx, input.gpuData(), input.dimensions[1], gradient.gpuData(), 
-                        gradient.dimensions[1], &mn, wGrad.gpuData(), wGrad.dimensions[1]));
-  //TryCuda()
-  int thCount = 256; //threads per block
-  while(thCount < input.dimensions[0]){
-    thCount *= 2;
-  }
+  //calculates weight gradient 
+  TryCuda(cublasSgemm_v2(CudaM->handle, CUBLAS_OP_N, CUBLAS_OP_T, input->dimensions[1], gradient.dimensions[1], 
+                        input->dimensions[0], &mx, input->gpuData(), input->dimensions[1], gradient.gpuData(), 
+                        gradient.dimensions[1], &mn, wGrad->gpuData(), wGrad->dimensions[1]));
+  
+  const int thCount = 256; //threads per block
   dim3 gridDim(gradient.dimensions[1]);
   dim3 blockDim(thCount); //one dimensional block of th threads
   size_t shrMemSize = thCount * sizeof(float); //size in memory of each block
   bGradKernel<<<gridDim, blockDim, shrMemSize>>>(gradient.gpuData(), bGrad.gpuData(), gradient.dimensions[0], gradient.dimensions[1]);
-  CudaM->resetTemp();
-  return {{&input, &weight, &bias}, {&iGrad, &wGrad, &bGrad}};
+  return{std::move(iGrad), std::move(ptr)};
 }
 
 DenseLayer::~DenseLayer(){

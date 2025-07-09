@@ -3,6 +3,8 @@
 #include <cudnn.h>
 #include <stdexcept>
 
+//think its good
+
 
 __inline__ void TryCuda(cudaError_t err){
   if(err != cudaSuccess){
@@ -18,6 +20,8 @@ __inline__ void TryCuda(cudnnStatus_t err){
   }
 }
 
+
+
 struct CudaMembers{
   cudnnHandle_t handle;
   cudnnTensorDescriptor_t inputD, outputD, biasD;
@@ -30,8 +34,15 @@ struct CudaMembers{
     TryCuda(cudnnCreateTensorDescriptor(&outputD));
     TryCuda(cudnnCreateTensorDescriptor(&biasD));
     TryCuda(cudnnCreateConvolutionDescriptor(&convoD));
-    TryCuda(cudnnCreateTensorDescriptor(&gradientD));
-
+    TryCuda(cudnnCreateFilterDescriptor(&filterD));
+  }
+  CudaMembers(const CudaMembers& r){
+    this.handle = r.handle;
+    this.inputD = r.inputD;
+    this.outputD = r.outputD;
+    this.biasD = r.biasD;
+    this.filterD = r.filterD;
+    this.convoD = r.convoD;
   }
   ~CudaMembers(){
     TryCuda(cudnnDestroyTensorDescriptor(inputD));
@@ -39,9 +50,7 @@ struct CudaMembers{
     TryCuda(cudnnDestroyTensorDescriptor(biasD));
     TryCuda(cudnnDestroyConvolutionDescriptor(convoD));
     TryCuda(cudnnDestroy(handle));
-    TryCuda(cudnnDestroyTensorDescriptor(gradientD));
   };
-
   void resetTemp(){
     TryCuda(cudnnDestroyTensorDescriptor(inputD));
     TryCuda(cudnnDestroyTensorDescriptor(outputD));
@@ -52,6 +61,16 @@ struct CudaMembers{
   }
 };
 
+
+ForwardCache::ForwardCache(const Tensor& tensor, CudaMembers& c) : T(tensor){
+  this->CudaM = new CudaMembers(c);
+}
+
+BackwardCache::BackwardCache() : trainingTensors(0);
+void BackwardCache::cachePair(const Tensor& m, const Tensor& grad){
+  
+}
+
 ConvolutionLayer::ConvolutionLayer(const int fC, const int iC, const int fH, const int fW) : bias({fC}, TensorLocation::GPU), filters({fC, iC, fW, fH}, TensorLocation::GPU){
   CudaM = new CudaMembers();
   TryCuda(cudnnSetFilter4dDescriptor(CudaM->filterD, CUDNN_DATA_FLOAT, CUDNN_TENSOR_NCHW, fC, iC, fH, fW));
@@ -59,14 +78,15 @@ ConvolutionLayer::ConvolutionLayer(const int fC, const int iC, const int fH, con
   TryCuda(cudnnSetConvolution2dDescriptor(CudaM->convoD, 1, 1, 1, 1, 1, 1, CUDNN_CONVOLUTION, CUDNN_DATA_FLOAT));
 }
 
-Tensor ConvolutionLayer::forward(const Tensor& T){
+std::pair<Tensor, std::unique_ptr<ForwardCache>> ConvolutionLayer::forward(const Tensor& T){
+  ForwardCache(T);
   int n = T.dimensions[0], c = T.dimensions[1], h = T.dimensions[2], w = T.dimensions[3]; //dimension variables, reused for memlocations in cudnn calls
   input = Tensor(T); //copies input tensor for backpropagation
 
   //setting descriptors, calculating output dimensions
-  TryCuda(cudnnSetTensor4dDescriptor(CudaM->inputD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, n, c, h, w));
-  TryCuda(cudnnGetConvolution2dForwardOutputDim(CudaM->convoD, CudaM->inputD, CudaM->filterD, &n, &c, &h, &w));
-  TryCuda(cudnnSetTensor4dDescriptor(CudaM->outputD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, n, c, h, w));
+  TryCuda(cudnnSetTensor4dDescriptor(CudaM->inputD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, n, c, h, w)); //input
+  TryCuda(cudnnGetConvolution2dForwardOutputDim(CudaM->convoD, CudaM->inputD, CudaM->filterD, &n, &c, &h, &w)); //calculates the dimension sizes that the output will have
+  TryCuda(cudnnSetTensor4dDescriptor(CudaM->outputD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, n, c, h, w)); //output
   Tensor output({n, c, h, w}, TensorLocation::GPU); //readies return tensor
   //variables for convolution algorithm and workspace memory
   cudnnConvolutionFwdAlgoPerf_t potential;
@@ -89,9 +109,9 @@ Tensor ConvolutionLayer::forward(const Tensor& T){
     TryCuda(cudaMalloc((void**)&workspace, wsSize));
   }
   //performs convolution
-  TryCuda(cudnnConvolutionForward(CudaM->handle, &a, CudaM->inputD, T.gpuData(), CudaM->filterD, 
+  TryCuda(cudnnConvolutionForward(CudaM->handle, &mx, CudaM->inputD, T.gpuData(), CudaM->filterD, 
                           filters.gpuData(), CudaM->convoD, algo, workspace, 
-                          wsSize, &b, CudaM->outputD, output.gpuData()));
+                          wsSize, &mn, CudaM->outputD, output.gpuData()));
   //freeing memory
   if(workspace != nullptr){ //frees the workspace if it was used
     TryCuda(cudaFree(workspace));
@@ -101,17 +121,17 @@ Tensor ConvolutionLayer::forward(const Tensor& T){
   TryCuda(cudnnAddTensor(CudaM->handle, &a, CudaM->biasD, bias.gpuData(), &b2, CudaM->outputD, output.gpuData()));
   return output;
 }
-
-std::pair<std::vector<Tensor*>, std::vector<Tensor*>> ConvolutionLayer::backward(const Tensor& gradient){
+std::pair<Tensor, std::unique_ptr<BackwardCache>> ConvolutionLayer::backward(const Tensor& gradient, const ForwardCache& fCache){
   //initializing gradient tensors and descriptor parameters
-  iGrad = Tensor(input.dimensions, TensorLocation::GPU);
-  bGrad = Tensor(bias.dimensions, TensorLocation::GPU);
-  fGrad = Tensor(filters.dimensions, TensorLocation::GPU);
-
+  Tensor iGrad(input.dimensions, TensorLocation::GPU, input.n);
+  bGrad = Tensor(bias.dimensions, TensorLocation::GPU, bias.n);
+  fGrad = Tensor(filters.dimensions, TensorLocation::GPU, filters.n);
+  //bad naming, first two for filter, last two for the returned gradient
   cudnnConvolutionBwdFilterAlgoPerf_t potential;
   cudnnConvolutionBwdFilterAlgo_t algo;
   cudnnConvolutionBwdDataAlgoPerf_t dataPot;
   cudnnConvolutionBwdDataAlgo_t dataAlgo;
+
   int algoCount = 0;
   size_t wsSize = 0, wsSizeTmp;
   void* workspace = nullptr;
@@ -124,7 +144,7 @@ std::pair<std::vector<Tensor*>, std::vector<Tensor*>> ConvolutionLayer::backward
   TryCuda(cudnnGetConvolutionBackwardDataWorkspaceSize(CudaM->handle, CudaM->filterD, CudaM->outputD, CudaM->convoD, CudaM->inputD, dataAlgo, &wsSize));
   TryCuda(cudnnGetConvolutionBackwardFilterWorkspaceSize(CudaM->handle, CudaM->inputD, CudaM->outputD, CudaM->convoD, CudaM->filterD, algo, &wsSizeTmp));
   wsSize = std::max(wsSize, wsSizeTmp);
-  if(wsSize > 0){
+  if(wsSize > 0){ //allocates space for workspace if necessary, uses the higher space requirement so both can use the same allocation on their turn
     TryCuda(cudaMalloc((void**)&workspace, wsSize));
   }
 
@@ -138,8 +158,8 @@ std::pair<std::vector<Tensor*>, std::vector<Tensor*>> ConvolutionLayer::backward
     TryCuda(cudaFree(workspace));
     workspace = nullptr;
   }
-
-  return {{&input, &filters, &bias}, {&iGrad, &fGrad, &bGrad}}; //fix output
+  CudaM->resetTemp();
+  return iGrad;
 }
 
 ConvolutionLayer::~ConvolutionLayer(){

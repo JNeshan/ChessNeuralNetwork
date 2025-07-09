@@ -8,12 +8,12 @@ class tanhLayer : Layer {
 public:
   tanhLayer();
   virtual ~tanhLayer();
-  virtual Tensor forward(const Tensor& T) override;
-  virtual std::pair<std::vector<Tensor*>, std::vector<Tensor*>> backward(const Tensor& gradient) override;
+  virtual std::pair<Tensor, std::unique_ptr<ForwardCache>> forward(const Tensor& T) override;
+  virtual std::pair<Tensor, std::unique_ptr<BackwardCache>> backward(const Tensor& gradient, const ForwardCache& fCache) override;
 
 private:
   CudaMembers *CudaM;
-  Tensor input, output;
+  Tensor output;
 };
 
 #endif

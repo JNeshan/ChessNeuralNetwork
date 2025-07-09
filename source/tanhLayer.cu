@@ -19,27 +19,23 @@ __inline__ void TryCuda(cudnnStatus_t err){
 
 struct CudaMembers{
   cudnnHandle_t handle;
-  cudnnTensorDescriptor_t inputD, outputD;
+  cudnnTensorDescriptor_t tensorD;
   cudnnActivationDescriptor_t actD;
 
   CudaMembers(){
     TryCuda(cudnnCreate(&handle));
-    TryCuda(cudnnCreateTensorDescriptor(&inputD));
-    TryCuda(cudnnCreateTensorDescriptor(&outputD));
+    TryCuda(cudnnCreateTensorDescriptor(&tensorD));
     TryCuda(cudnnCreateActivationDescriptor(&actD));
 
   }
 
   void resetTemp(){
-    TryCuda(cudnnDestroyTensorDescriptor(inputD));
-    TryCuda(cudnnDestroyTensorDescriptor(outputD));
-    TryCuda(cudnnCreateTensorDescriptor(&inputD));
-    TryCuda(cudnnCreateTensorDescriptor(&outputD));
+    TryCuda(cudnnDestroyTensorDescriptor(tensorD));
+    TryCuda(cudnnCreateTensorDescriptor(&tensorD));
   }
 
   ~CudaMembers(){
-    TryCuda(cudnnDestroyTensorDescriptor(inputD));
-    TryCuda(cudnnDestroyTensorDescriptor(outputD));
+    TryCuda(cudnnDestroyTensorDescriptor(tensorD));
     TryCuda(cudnnDestroyActivationDescriptor(actD));
     TryCuda(cudnnDestroy(handle));
   };
@@ -48,32 +44,25 @@ struct CudaMembers{
 tanhLayer::tanhLayer(){
   CudaM = new CudaMembers();
   TryCuda(cudnnSetActivationDescriptor(CudaM->actD, CUDNN_ACTIVATION_TANH, CUDNN_NOT_PROPAGATE_NAN, 0.0f));
-
 }
 
 tanhLayer::~tanhLayer(){
   delete CudaM;
 }
 
-Tensor tanhLayer::forward(const Tensor& T){
-  output = Tensor({T.dimensions[0], 1}, TensorLocation::GPU);
-  input = Tensor(T);
-
-  if(T.size != output.size){
-    throw("Bad tanh input");
-  }
-
-  TryCuda(cudnnSetTensor4dDescriptor(CudaM->inputD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, T.dimensions[0], 1, 1, 1));
-  TryCuda(cudnnSetTensor4dDescriptor(CudaM->outputD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, T.dimensions[0], 1, 1, 1));
-  TryCuda(cudnnActivationForward(CudaM->handle, CudaM->actD, &mx, CudaM->inputD, input.gpuData(), &mn, CudaM->outputD, output.gpuData()));
+std::pair<Tensor, std::unique_ptr<ForwardCache>> tanhLayer::forward(const Tensor& T){
+  Tensor output(T.dimensions, TensorLocation::GPU, T.n);
+  TryCuda(cudnnSetTensor4dDescriptor(CudaM->tensorD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, T.size, 1, 1, 1));
+  TryCuda(cudnnActivationForward(CudaM->handle, CudaM->actD, &mx, CudaM->tensorD, T.gpuData(), &mn, CudaM->tensorD, output.gpuData()));
+  ForwardCache(output);
   return output;
 }
 
-std::pair<std::vector<Tensor*>, std::vector<Tensor*>> tanhLayer::backward(const Tensor& gradient){
-  iGrad = Tensor(input.dimensions);
+std::pair<Tensor, std::unique_ptr<BackwardCache>> tanhLayer::backward(const Tensor& gradient, const ForwardCache& fCache){
+  Tensor iGrad(dimensions, TensorLocation::GPU, n);
   TryCuda(cudnnActivationBackward(CudaM->handle, CudaM->actD, &mx, CudaM->outputD, output.gpuData(), CudaM->outputD, 
                                   gradient.gpuData(), CudaM->inputD, output.gpuData(), &mn, CudaM->inputD, iGrad.gpuData()));
 
   CudaM->resetTemp();
-  return {{&input}, {&iGrad}}; 
+  return iGrad; 
 }

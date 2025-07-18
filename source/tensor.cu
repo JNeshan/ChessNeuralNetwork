@@ -1,6 +1,6 @@
 #include <stdexcept>
 #include <vector>
-#include "header/tensor.h"
+#include "../header/tensor.h"
 #include "cuda_runtime.h"
 
 __inline__ void TryCuda(cudaError_t err){
@@ -53,14 +53,14 @@ Tensor::Tensor(const std::vector<int>& dim, const TensorLocation loc, const int 
 }
 
 Tensor::Tensor(const Tensor& r){
-  this.device = r.device;
-  this.dimensions = r.dimensions;
-  this.n = r.n;
-  this.size = r.size;
+  this->device = r.device;
+  this->dimensions = r.dimensions;
+  this->n = r.n;
+  this->size = r.size;
   if(r.data != nullptr){
-    if(this.device == TensorLocation::GPU){
+    if(this->device == TensorLocation::GPU){
       TryCuda(cudaMalloc((void**)&data, size * sizeof(float)));
-      TryCuda(cudaMemcpy(this.data, r.data, size * sizeof(float), cudaMemcpyDeviceToDevice));
+      TryCuda(cudaMemcpy(this->data, r.data, size * sizeof(float), cudaMemcpyDeviceToDevice));
     }
     else{
       data = new float[size];
@@ -102,26 +102,26 @@ Tensor& Tensor::operator=(const Tensor& r){
     return *this;
   }
   
-  if(this.data != nullptr){
-    if(this.device == TensorLocation::GPU){
+  if(this->data != nullptr){
+    if(this->device == TensorLocation::GPU){
       TryCuda(cudaFree(data));
     }
     else{
-      delete[] this.data;
+      delete[] this->data;
     }
   }
 
-  this.size = r.size;
-  this.device = r.device;
-  this.dimensions = r.dimensions;
-  this.n = r.n;
-  this.data = nullptr;
+  this->size = r.size;
+  this->device = r.device;
+  this->dimensions = r.dimensions;
+  this->n = r.n;
+  this->data = nullptr;
   if(device == TensorLocation::GPU){
     TryCuda(cudaMalloc((void**)&data, size * sizeof(float)));
     TryCuda(cudaMemcpy(data, r.data, size * sizeof(float), cudaMemcpyDeviceToDevice));
   }
   else{
-    this.data = new float[size];
+    this->data = new float[size];
     memcpy(data, r.data, size * sizeof(float));
   }
   return *this;

@@ -1,7 +1,9 @@
-#include "header/reluLayer.h"
+#include "../header/reluLayer.h"
 #include <cuda_runtime.h>
 #include <cudnn.h>
 
+thread_local cudnnHandle_t Layer::nnHandle{};
+thread_local cublasHandle_t Layer::blasHandle{};
 
 __inline__ void TryCuda(cudaError_t err){
   if(err != cudaSuccess){
@@ -17,50 +19,27 @@ __inline__ void TryCuda(cudnnStatus_t err){
   }
 }
 
-
-struct CudaMembers{
-  cudnnHandle_t handle;
-  cudnnActivationDescriptor_t reLU;
-  cudnnTensorDescriptor_t tensorD;
-
-  CudaMembers(){
-    TryCuda(cudnnCreate(&handle));
-    TryCuda(cudnnCreateTensorDescriptor(&tensorD));
-    TryCuda(cudnnCreateActivationDescriptor(&reLU));
-
-  }
-  ~CudaMembers(){
-    TryCuda(cudnnDestroyTensorDescriptor(tensorD));
-    TryCuda(cudnnDestroyActivationDescriptor(reLU));
-    TryCuda(cudnnDestroy(handle));
-  }
-  void resetTemp(){
-    TryCuda(cudnnDestroyTensorDescriptor(tensorD));
-    TryCuda(cudnnCreateTensorDescriptor(&tensorD));
-  }
-};
-
 ReLULayer::ReLULayer(){
-  CudaM = new CudaMembers();
-  TryCuda(cudnnSetActivationDescriptor(CudaM->reLU, CUDNN_ACTIVATION_RELU, CUDNN_PROPAGATE_NAN, 2));
+  TryCuda(cudnnCreateTensorDescriptor(&tensorD));
+  TryCuda(cudnnCreateActivationDescriptor(&reLU));  
+  TryCuda(cudnnSetActivationDescriptor(reLU, CUDNN_ACTIVATION_RELU, CUDNN_PROPAGATE_NAN, 2));
 
 }
 
-std::pair<Tensor, std::unique_ptr<ForwardCache>> ReLULayer::forward(const Tensor& T){
+Tensor ReLULayer::forward(const Tensor& T){
   Tensor output(T.dimensions, TensorLocation::GPU, T.size);
-  TryCuda(cudnnSetTensor4dDescriptor(CudaM->tensorD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, T.size, 1, 1, 1));
-  TryCuda(cudnnActivationForward(CudaM->handle, CudaM->reLU, &alpha, CudaM->tensorD, T.gpuData(), &beta, CudaM->tensorD, output.gpuData()));
+  TryCuda(cudnnSetTensor4dDescriptor(tensorD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, T.size, 1, 1, 1));
+  TryCuda(cudnnActivationForward(nnHandle, reLU, &mx, tensorD, T.gpuData(), &mn, tensorD, output.gpuData()));
   return output;
 }
 
-std::pair<Tensor, std::unique_ptr<BackwardCache>> ReLULayer::backward(const Tensor& gradient, const ForwardCache& fCache){
+Tensor ReLULayer::backward(const Tensor& gradient){
   Tensor iGrad(input.dimensions, TensorLocation::GPU, input.n);
-  TryCuda(cudnnActivationBackward(CudaM->handle, CudaM->reLU, &mx, CudaM->tensorD, gradient.gpuData(), CudaM->tensorD, gradient.gpuData(), CudaM->tensorD, input.gpuData(), &mn, CudaM->tensorD, iGrad.gpuData()));  
-  BackwardCache back();
-  std::pair<std::vector<Tensor*>, std::vector<Tensor*>>
+  TryCuda(cudnnActivationBackward(nnHandle, reLU, &mx, tensorD, gradient.gpuData(), tensorD, gradient.gpuData(), tensorD, input.gpuData(), &mn, tensorD, iGrad.gpuData()));  
   return iGrad;
 }
 
 ReLULayer::~ReLULayer(){
-  delete CudaM;
+  TryCuda(cudnnDestroyTensorDescriptor(tensorD));
+  TryCuda(cudnnDestroyActivationDescriptor(reLU));
 }

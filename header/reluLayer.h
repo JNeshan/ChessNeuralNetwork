@@ -8,11 +8,12 @@ class ReLULayer : public Layer{
 public:
   ReLULayer();
   ~ReLULayer();
-  virtual std::pair<Tensor, std::unique_ptr<ForwardCache>> forward(const Tensor& T) override;
-  virtual std::pair<Tensor, std::unique_ptr<BackwardCache>> backward(const Tensor& gradient, const ForwardCache& fCache) override;
-  CudaMembers *CudaM;
-
+  virtual Tensor forward(const Tensor& T) override;
+  virtual Tensor backward(const Tensor& gradient) override;
 private:
+  Tensor input;
+  cudnnTensorDescriptor_t tensorD;
+  cudnnActivationDescriptor_t reLU;
 };
 
 #endif

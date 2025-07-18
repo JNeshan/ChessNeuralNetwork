@@ -3,22 +3,22 @@
 #define CONVOLUTIONLAYER_H
 #include "layer.h"
 
-struct CudaMembers;
-
 
 class ConvolutionLayer : Layer {
 public:
   ConvolutionLayer(const int fC, const int iC, const int fH, const int fW);
   ~ConvolutionLayer();
-  virtual std::pair<Tensor, std::unique_ptr<ForwardCache>> forward(const Tensor& T) override;
-  virtual std::pair<Tensor, std::unique_ptr<BackwardCache>> backward(const Tensor& gradient, const ForwardCache& fCache) override;
-  void loadParameters(std::ifstream& iF);
-  void saveParameters(std::ofstream& oF);
+  virtual Tensor forward(const Tensor& T) override;
+  virtual Tensor backward(const Tensor& gradient) override;
+
+  bool y; //mutex for training, only one 
 
 private:
   int filterSize;
-  Tensor filters, bias; //filter and bias tensors
-  CudaMembers *CudaM; //holds cuda member variables
+  Tensor input, filters, bias, iGrad, fGrad, bGrad; //filter and bias tensors
+  cudnnFilterDescriptor_t filterD; 
+  cudnnTensorDescriptor_t inputD, biasD, outputD;
+  cudnnConvolutionDescriptor_t convoD;
 };
 
 #endif

@@ -11,15 +11,15 @@ public:
   SoftmaxLayer();
   ~SoftmaxLayer();
 
-  virtual std::pair<Tensor, std::unique_ptr<ForwardCache>> forward(const Tensor& T) override;
-  virtual std::pair<Tensor, std::unique_ptr<BackwardCache>> backward(const Tensor& gradient, const ForwardCache& fCache) override;
+  virtual Tensor forward(const Tensor& T) override;
+  virtual Tensor backward(const Tensor& gradient) override;
 
 private:
-  CudaMembers *CudaM;
   Tensor output;
   std::vector<int> dimensions;
   const int outFeat;
   int n;
+  cudnnTensorDescriptor_t tensorD;
 };
 
 

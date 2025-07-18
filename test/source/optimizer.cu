@@ -1,5 +1,5 @@
 #include <cuda_runtime.h>
-#include "header/optimizer.h"
+#include "../header/optimizer.h"
 
 //should be functional, still needs to verify it didn't create any cuda errors
 
@@ -25,6 +25,5 @@ void Optimizer::optimize(const Tensor& in, const Tensor& grad){
   dim3 blockDim(thCount);
   dim3 gridDim(m);
   GradDescentKernel<<<gridDim, blockDim>>>(in.gpuData(), grad.gpuData(), lR, in.size);
-  
   return;
 }

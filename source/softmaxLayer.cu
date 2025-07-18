@@ -1,7 +1,12 @@
-#include "header/softmaxLayer.h"
+#include "../header/softmaxLayer.h"
 #include <cuda_runtime.h>
 #include <cudnn.h>
 #include <stdexcept>
+#include <string>
+
+thread_local cudnnHandle_t Layer::nnHandle{};
+thread_local cublasHandle_t Layer::blasHandle{};
+
 
 __inline__ void TryCuda(cudaError_t err){
   if(err != cudaSuccess){
@@ -17,30 +22,26 @@ __inline__ void TryCuda(cudnnStatus_t err){
   }
 }
 
-struct CudaMembers{
-  cudnnHandle_t handle;
+struct CudaCache{
   cudnnTensorDescriptor_t tensorD;
-
-  CudaMembers(){
-    TryCuda(cudnnCreate(&handle));
+  CudaCache(){
     TryCuda(cudnnCreateTensorDescriptor(&tensorD));
   }
-
-  ~CudaMembers(){
+  ~CudaCache(){
     TryCuda(cudnnDestroyTensorDescriptor(tensorD));
-    TryCuda(cudnnDestroy(handle));
-  };
+  }
 };
 
 SoftmaxLayer::SoftmaxLayer() : outFeat(4672){
-  CudaM = new CudaMembers();
+  TryCuda(cudnnCreateTensorDescriptor(&tensorD));
 }
 
 SoftmaxLayer::~SoftmaxLayer(){
-  delete CudaM;
+  TryCuda(cudnnDestroyTensorDescriptor(tensorD));
 }
 
-std::pair<Tensor, std::unique_ptr<ForwardCache>> SoftmaxLayer::forward(const Tensor& T){
+Tensor SoftmaxLayer::forward(const Tensor& T){
+
   if(T.n != 2){ //input must be 2 dimensional
     throw("Softmax input invalid n = " + std::to_string(T.n));
   }
@@ -49,18 +50,17 @@ std::pair<Tensor, std::unique_ptr<ForwardCache>> SoftmaxLayer::forward(const Ten
   if(output.size != T.size){ //check to ensure the matrices are the same size (also means 2nd dimensions are equal)
     throw("Bad softmax input"); 
   }
-  TryCuda(cudnnSetTensor4dDescriptor(CudaM->tensorD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, T.dimensions[0], T.dimensions[1], 1, 1)); //input descriptor
-  TryCuda(cudnnSoftmaxForward(CudaM->handle, CUDNN_SOFTMAX_FAST, CUDNN_SOFTMAX_MODE_INSTANCE, &mx, CudaM->tensorD, T.gpuData(), &mn, CudaM->tensorD, output.gpuData()));
+  TryCuda(cudnnSetTensor4dDescriptor(tensorD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, T.dimensions[0], T.dimensions[1], 1, 1)); //input descriptor
+  TryCuda(cudnnSoftmaxForward(nnHandle, CUDNN_SOFTMAX_FAST, CUDNN_SOFTMAX_MODE_INSTANCE, &mx, tensorD, T.gpuData(), &mn, tensorD, output.gpuData()));
   return output;
 }
 
-std::pair<Tensor, std::unique_ptr<BackwardCache>> SoftmaxLayer::backward(const Tensor& gradient, const ForwardCache& fCache){
+Tensor SoftmaxLayer::backward(const Tensor& gradient){
   if(gradient.n != 2 || gradient.size < output.size){
     throw("Softmax recieved bad gradient or recorded faulty output");
   }
   Tensor iGrad(output.dimensions, TensorLocation::GPU, output.n);
-  TryCuda(cudnnSoftmaxBackward(CudaM->handle, CUDNN_SOFTMAX_FAST, CUDNN_SOFTMAX_MODE_INSTANCE, &mx, CudaM->tensorD, 
-                              output.gpuData(), CudaM->tensorD, gradient.gpuData(), &mn, CudaM->tensorD, iGrad.gpuData()));
-  CudaM->resetTemp();
+  TryCuda(cudnnSoftmaxBackward(nnHandle, CUDNN_SOFTMAX_FAST, CUDNN_SOFTMAX_MODE_INSTANCE, &mx, tensorD, 
+                              output.gpuData(), tensorD, gradient.gpuData(), &mn, tensorD, iGrad.gpuData()));
   return iGrad;
 }

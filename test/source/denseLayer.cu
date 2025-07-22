@@ -129,8 +129,9 @@ void DenseLayer::cleanSave(std::ofstream& oF){
     std::cout<<"File not open"<<std::endl;
     return;
   }
-
+  oF << "Dense Layer Tensors:\nWeights ";
   weight.writeTensor(oF);
+  oF << "Bias ";
   bias.writeTensor(oF);
   weight.gpuSend();
   bias.gpuSend();

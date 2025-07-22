@@ -4,10 +4,6 @@
 #include <stdexcept>
 #include <string>
 
-thread_local cudnnHandle_t Layer::nnHandle{};
-thread_local cublasHandle_t Layer::blasHandle{};
-
-
 __inline__ void TryCuda(cudaError_t err){
   if(err != cudaSuccess){
     fprintf(stderr, "CUDA Error in %s at line %d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err));
@@ -63,4 +59,23 @@ Tensor SoftmaxLayer::backward(const Tensor& gradient){
   TryCuda(cudnnSoftmaxBackward(nnHandle, CUDNN_SOFTMAX_FAST, CUDNN_SOFTMAX_MODE_INSTANCE, &mx, tensorD, 
                               output.gpuData(), tensorD, gradient.gpuData(), &mn, tensorD, iGrad.gpuData()));
   return iGrad;
+}
+
+void SoftmaxLayer::saveTensor(std::ofstream& oF){
+  return;
+}
+void SoftmaxLayer::genTensorData(){
+  return;
+}
+void SoftmaxLayer::loadTensor(std::ifstream& iF){
+  return;
+}
+
+void SoftmaxLayer::cleanSave(std::ofstream& oF){
+  if(!oF.is_open()){
+    std::cout<<"File not open"<<std::endl;
+    return;
+  }
+  oF << "Softmax Layer Tensor:\n";
+  output.writeTensor(oF);
 }

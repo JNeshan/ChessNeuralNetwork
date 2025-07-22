@@ -3,9 +3,6 @@
 #include <cudnn.h>
 #include <stdexcept>
 
-thread_local cudnnHandle_t Layer::nnHandle{};
-thread_local cublasHandle_t Layer::blasHandle{};
-
 
 __inline__ void TryCuda(cudaError_t err){
   if(err != cudaSuccess){
@@ -45,4 +42,23 @@ Tensor tanhLayer::backward(const Tensor& gradient){
                                   gradient.gpuData(), tensorD, output.gpuData(), &mn, tensorD, iGrad.gpuData()));
 
   return iGrad; 
+}
+
+void tanhLayer::saveTensor(std::ofstream& oF){
+  return;
+}
+void tanhLayer::genTensorData(){
+  return;
+}
+void tanhLayer::loadTensor(std::ifstream& iF){
+  return;
+}
+
+void tanhLayer::cleanSave(std::ofstream& oF){
+  if(!oF.is_open()){
+    std::cout<<"File not open"<<std::endl;
+    return;
+  }
+  oF <<"tanh Layer Tensor:\n";
+  output.writeTensor(oF);
 }

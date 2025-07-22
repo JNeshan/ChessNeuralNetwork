@@ -1,22 +1,24 @@
-#ifndef DENSELAYER_H
-#define DENSELAYER_H
+#ifndef TANHLAYER_H
+#define TANHLAYER_H
 
 #include "layer.h"
 
-class DenseLayer : public Layer {
+
+class tanhLayer : Layer {
 public:
-  DenseLayer(const int f, const int n);
-  virtual ~DenseLayer();
+  tanhLayer();
+  virtual ~tanhLayer();
   virtual Tensor forward(const Tensor& T) override;
   virtual Tensor backward(const Tensor& gradient) override;
   virtual void genTensorData() override;
   virtual void loadTensor(std::ifstream& iF) override;
   virtual void saveTensor(std::ofstream& oF) override;
   virtual void cleanSave(std::ofstream& oF) override;
-  Tensor input, weight, bias, wGrad, bGrad;
-
 
 private:
+  Tensor output;
+  cudnnTensorDescriptor_t tensorD;
+  cudnnActivationDescriptor_t actD;
 };
 
 #endif

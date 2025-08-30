@@ -11,7 +11,7 @@ public:
   SoftmaxLayer();
   ~SoftmaxLayer();
 
-  virtual Tensor forward(const Tensor& T) override;
+  virtual Tensor forward(const Tensor& T, bool train) override;
   virtual Tensor backward(const Tensor& gradient) override;
 
 private:

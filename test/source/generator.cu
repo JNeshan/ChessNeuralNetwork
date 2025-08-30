@@ -87,5 +87,4 @@ void Generator::copy(const int s, const float* r, float* data){
   copyKernel<<<gridDim, blockDim>>>(s, r, data);
   TryCuda(cudaGetLastError());
   TryCuda(cudaDeviceSynchronize());
-  
 }

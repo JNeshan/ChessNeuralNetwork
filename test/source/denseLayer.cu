@@ -55,7 +55,7 @@ __global__ void bGradKernel(const float* grad, float* out, const int m, const in
 
 DenseLayer::DenseLayer(const int f, const int n) : weight({f, n}, TensorLocation::GPU), bias({n}, TensorLocation::GPU), wGrad({f, n}, TensorLocation::GPU), bGrad({n}, TensorLocation::GPU), input(){}
 
-Tensor DenseLayer::forward(const Tensor& T){
+Tensor DenseLayer::forward(const Tensor& T, bool train){
   if(T.n != 2){
     throw("Wrong dimensional tensor for dense layer.");
   }
@@ -138,3 +138,7 @@ void DenseLayer::cleanSave(std::ofstream& oF){
 }
 
 DenseLayer::~DenseLayer(){}
+
+std::pair<std::vector<Tensor*>, std::vector<Tensor*>> DenseLayer::getLearningData(){
+  return {{&weight, &bias}, {&wGrad, &bGrad}};
+}

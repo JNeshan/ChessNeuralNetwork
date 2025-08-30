@@ -4,11 +4,11 @@
 #include "layer.h"
 
 
-class ConvolutionLayer : Layer {
+class ConvolutionLayer : public Layer {
 public:
   ConvolutionLayer(const int fC, const int iC, const int fH, const int fW);
   ~ConvolutionLayer();
-  virtual Tensor forward(const Tensor& T) override;
+  virtual Tensor forward(const Tensor& T, bool train) override;
   virtual Tensor backward(const Tensor& gradient) override;
 
   bool y; //mutex for training, only one 

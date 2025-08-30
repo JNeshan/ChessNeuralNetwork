@@ -43,7 +43,7 @@ ConvolutionLayer::ConvolutionLayer(const int fC, const int iC, const int fH, con
   TryCuda(cudnnSetTensor4dDescriptor(biasD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, 1, fC, 1, 1));
 }
 
-Tensor ConvolutionLayer::forward(const Tensor& T){
+Tensor ConvolutionLayer::forward(const Tensor& T, bool train){
 
   int n = T.dimensions[0], c = T.dimensions[1], h = T.dimensions[2], w = T.dimensions[3];
   input = Tensor(T);

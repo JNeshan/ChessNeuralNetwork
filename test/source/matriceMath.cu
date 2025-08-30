@@ -15,7 +15,7 @@ __inline__ void TryCuda(cublasStatus_t err){
 }
 
 
-__global__ void AddKernel(const float* input, const float* bias, float* out, const int n, const int m){
+__global__ void AddKernelM(const float* input, const float* bias, float* out, const int n, const int m){
   const int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if(idx < n * m){
     if(input == out){
@@ -49,7 +49,7 @@ void MatriceMath::add(const Tensor& N, const Tensor& B, Tensor& O){
   float* out = O.gpuData();
   int n = N.dimensions[0], m = N.size / n, thrdCnt = 256;
   dim3 gridDim((N.size + thrdCnt - 1) / thrdCnt), blockDim(thrdCnt);
-  AddKernel<<<gridDim, blockDim>>>(input, bias, out, n, m);
+  AddKernelM<<<gridDim, blockDim>>>(input, bias, out, n, m);
   return;
 }
 

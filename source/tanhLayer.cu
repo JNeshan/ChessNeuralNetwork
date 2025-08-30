@@ -32,7 +32,7 @@ tanhLayer::~tanhLayer(){
   TryCuda(cudnnDestroyActivationDescriptor(actD));
 }
 
-Tensor tanhLayer::forward(const Tensor& T){
+Tensor tanhLayer::forward(const Tensor& T, bool train){
   Tensor output(T.dimensions, TensorLocation::GPU, T.n);
   TryCuda(cudnnSetTensor4dDescriptor(tensorD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, T.size, 1, 1, 1));
   TryCuda(cudnnActivationForward(nnHandle, actD, &mx, tensorD, T.gpuData(), &mn, tensorD, output.gpuData()));

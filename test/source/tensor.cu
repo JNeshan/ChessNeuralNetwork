@@ -13,6 +13,32 @@ __inline__ void TryCuda(cudaError_t err){
   }
 }
 
+__inline__ std::string formatFloat(float f, int width, int precision){
+  std::ostringstream oss;
+  oss << std::fixed << std::setprecision(precision)<<f;
+  std::string out = oss.str();
+
+  if(out.length() < width){
+    out = std::string(width - out.length(), ' ') + out;
+  }
+  else if(out.length() > width){
+    out = out.substr(0, width);
+  }
+  return out;
+}
+
+__global__ void AddKernel(const float* A, const float* B, float* out, const int n, const int m){
+  const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if(idx < n * m){
+    if(A == out){
+      out[idx] += B[idx];
+    }
+    else{
+      out[idx] = B[idx] + A[idx];
+    }
+  }
+}
+
 Tensor::~Tensor() {
   if(size == -1){ //blank tensor
     return;
@@ -47,7 +73,7 @@ Tensor::Tensor(const std::vector<int>& dim, const TensorLocation loc, const int 
 
   if(loc == TensorLocation::CPU){
     device = TensorLocation::CPU;
-    data = new float[size];
+    data = new float[size]();
   }
   else{
     device = TensorLocation::GPU;
@@ -82,20 +108,20 @@ Tensor& Tensor::operator=(Tensor&& r){
     return *this;
   }
 
-  if(data){
-    if(device == TensorLocation::GPU){
-      TryCuda(cudaFree(data));
+  if(this->data){
+    if(this->device == TensorLocation::GPU){
+      TryCuda(cudaFree(this->data));
     }
     else{
-      delete[] data;
+      delete[] this->data;
     }
   }
 
-  size = r.size;
-  device = r.device;
-  dimensions = r.dimensions;
-  n = r.n;
-  data = r.data;
+  this->size = r.size;
+  this->device = r.device;
+  this->dimensions = r.dimensions;
+  this->n = r.n;
+  this->data = r.data;
   r.data = nullptr; 
   return *this;
 }
@@ -128,6 +154,33 @@ Tensor& Tensor::operator=(const Tensor& r){
     memcpy(data, r.data, size * sizeof(float));
   }
   return *this;
+}
+
+void Tensor::batch(Tensor& B){
+  int nSize = this->size + B.size;
+  if(this->device == TensorLocation::CPU){
+    B.cpuSend();
+    float* aStart = new float[nSize];
+    float* bStart = aStart + this->size;
+    std::move(this->data, this->data + this->size, aStart);
+    std::move(B.data, B.data + B.size, bStart);
+    delete[] this->data;
+    this->data = aStart;
+  }
+  else{
+    B.gpuSend();
+    float* aStart = nullptr;
+    float* bStart = nullptr;
+    TryCuda(cudaMalloc((void**)&aStart, nSize * sizeof(float)));
+    TryCuda(cudaMemcpy(aStart, this->data, this->size * sizeof(float), cudaMemcpyDeviceToDevice));
+    bStart = aStart + this->size;
+    TryCuda(cudaMemcpy(bStart, B.data, B.size * sizeof(float), cudaMemcpyDeviceToDevice));
+    TryCuda(cudaFree(this->data));
+    this->data = aStart;
+  }
+  this->size = nSize;
+  this->dimensions[0] += B.dimensions[0];
+  return;
 }
 
 float* Tensor::cpuData() const{
@@ -199,20 +252,6 @@ void Tensor::reshape(const std::vector<int>& dim, const int nth){
   }
 }
 
-__inline__ std::string formatFloat(float f, int width, int precision){
-  std::ostringstream oss;
-  oss << std::fixed << std::setprecision(precision)<<f;
-  std::string out = oss.str();
-
-  if(out.length() < width){
-    out = std::string(width - out.length(), ' ') + out;
-  }
-  else if(out.length() > width){
-    out = out.substr(0, width);
-  }
-  return out;
-}
-
 //appending
 void Tensor::writeTensor(std::ofstream& oF){
   int width = 16, precision = 14;
@@ -282,4 +321,27 @@ void Tensor::readBinary(std::ifstream& iF){
   iF.read(reinterpret_cast<char*>(this->dimensions.data()), d * sizeof(int));
   iF.read(reinterpret_cast<char*>(this->data), this->size * sizeof(float));
   this->device = TensorLocation::CPU;
+}
+
+void Tensor::gpuAdd(Tensor& B){
+  if(this->size != B.size){
+    throw("Different sizes for addition");
+  }
+  this->gpuSend();
+  B.gpuSend();
+
+  float* bData = B.gpuData(), *aData = this->gpuData();
+  int n = this->dimensions[0], m = this->size / n, thrdCnt = 256;
+  dim3 gridDim((this->size + thrdCnt - 1) / thrdCnt), blockDim(thrdCnt);
+  AddKernel<<<gridDim, blockDim>>>(aData, bData, aData, n, m);
+}
+
+float* Tensor::gpuDataForce(){
+  this->gpuSend();
+  return this->data;
+}
+
+float* Tensor::cpuDataForce(){
+  this->cpuSend();
+  return this->data;
 }

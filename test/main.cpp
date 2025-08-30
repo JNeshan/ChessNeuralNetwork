@@ -10,13 +10,37 @@
 #include "header/convolutionLayer.h"
 #include "header/tanhLayer.h"
 #include "header/softmaxLayer.h"
-
+#include "header/normalizationLayer.h"
+#include "header/mcts.h"
 
 
 using namespace std;
 using TL = TensorLocation;
 
 int main(){
+  bool generate = true;
+  std::vector<Layer*> body, policyHead, valueHead;
+  Layer* l = nullptr;
+  l = new ConvolutionLayer(256, 17, 3, 3);
+  body.push_back(l);
+  l = new NormalizationLayer(true, 256);
+  body.push_back(l);
+  l = new ReLULayer;
+  body.push_back(l);
+
+  for(int i = 0; i < 5; i++){
+    l = new ConvolutionLayer(256, 256, 3, 3);
+    body.push_back(l);
+    l = new NormalizationLayer(true, 256);
+    body.push_back(l);
+    l = new ConvolutionLayer(256, 256, 3, 3);
+    body.push_back(l);
+    l = new NormalizationLayer(true, 256);
+    body.push_back(l);
+    l = new ReLULayer;
+    body.push_back(l);
+  }
+
 
   std::ofstream outF("Output.txt");
   if(!outF.is_open()){
@@ -26,23 +50,14 @@ int main(){
   std::string binF = "tensors.bin";
   std::ofstream outBin;
   std::ifstream inBin;
-
-  //MatriceMath cl;
-  DenseLayer dense(2, 2);
-  ReLULayer relu;
-  ConvolutionLayer convolution(8, 2, 1, 1);
-  tanhLayer tanh;
-  SoftmaxLayer softmax;
-  //Tensor T({4, 4}, TensorLocation::GPU);
-  //Generator::tGen(T);
-  //Tensor O = tanh.forward(T);
-  //T.writeTensor(outF);
-  //O.writeTensor(outF);
-  Tensor T({1, 4672}, TensorLocation::GPU);
+  Tensor T({2, 2}, TensorLocation::GPU, 2);
   Generator::tGen(T);
-  Tensor O = softmax.forward(T);
+  Tensor O({2, 2});
+  T.batch(O);
+  T.cpuSend();
+  T.batch(O);
   T.writeTensor(outF);
-  O.writeTensor(outF);
+  
   outF.close();
   outBin.close();
   cout<<"ran"<<endl;

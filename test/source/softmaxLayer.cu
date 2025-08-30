@@ -36,7 +36,7 @@ SoftmaxLayer::~SoftmaxLayer(){
   TryCuda(cudnnDestroyTensorDescriptor(tensorD));
 }
 
-Tensor SoftmaxLayer::forward(const Tensor& T){
+Tensor SoftmaxLayer::forward(const Tensor& T, bool train){
 
   if(T.n != 2){ //input must be 2 dimensional
     throw("Softmax input invalid n = " + std::to_string(T.n));
@@ -78,4 +78,8 @@ void SoftmaxLayer::cleanSave(std::ofstream& oF){
   }
   oF << "Softmax Layer Tensor:\n";
   output.writeTensor(oF);
+}
+
+std::pair<std::vector<Tensor*>, std::vector<Tensor*>> SoftmaxLayer::getLearningData(){
+  return {};
 }

@@ -19,7 +19,7 @@ public:
   Layer();
   //Layer(const Layer& r);
   virtual ~Layer();
-  virtual Tensor forward(const Tensor& T) = 0;
+  virtual Tensor forward(const Tensor& T, bool train) = 0;
   virtual Tensor backward(const Tensor& gradient) = 0;
 
   const float mx = 1.0f, mn = 0.0f;

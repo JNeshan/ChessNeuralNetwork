@@ -3,8 +3,6 @@
 #include <cudnn.h>
 #include <stdexcept>
 
-//think its good - this was not true at all
-
 __inline__ void TryCuda(cudaError_t err){
   if(err != cudaSuccess){
     fprintf(stderr, "CUDA Error in %s at line %d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err));
@@ -41,11 +39,9 @@ ConvolutionLayer::ConvolutionLayer(const int fC, const int iC, const int fH, con
   TryCuda(cudnnSetConvolution2dDescriptor(convoD, 0, 0, 1, 1, 1, 1, CUDNN_CROSS_CORRELATION, CUDNN_DATA_FLOAT));
 }
 
-Tensor ConvolutionLayer::forward(const Tensor& T){
-
+Tensor ConvolutionLayer::forward(const Tensor& T, bool train){
   int n = T.dimensions[0], c = T.dimensions[1], h = T.dimensions[2], w = T.dimensions[3];
-  input = Tensor(T);
-  std::cout<<"reached"<<std::endl;
+  this->input = Tensor(T);
   //setting descriptors, calculating output dimensions
   TryCuda(cudnnSetTensor4dDescriptor(inputD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, n, c, h, w)); //input
   TryCuda(cudnnGetConvolution2dForwardOutputDim(convoD, inputD, filterD, &n, &c, &h, &w)); //calculates the dimension sizes that the output will have
@@ -64,7 +60,6 @@ Tensor ConvolutionLayer::forward(const Tensor& T){
   if(algoCount == 0){ //safety check if none are found
     throw std::runtime_error("cuDNN failed to find convolution");
   }
-  std::cout<<"reached"<<std::endl;
   algo = potential.algo; 
   //determines the necessary workspace size for convolution
   TryCuda(cudnnGetConvolutionForwardWorkspaceSize(nnHandle, inputD, filterD, 
@@ -72,7 +67,6 @@ Tensor ConvolutionLayer::forward(const Tensor& T){
   if(wsSize > 0){ //allocates necessary workspace space if any
     TryCuda(cudaMalloc((void**)&workspace, wsSize));
   }
-  std::cout<<"reached"<<std::endl;
   //performs convolution
   TryCuda(cudnnConvolutionForward(nnHandle, &mx, inputD, T.gpuData(), filterD, 
                           filters.gpuData(), convoD, algo, workspace, 
@@ -90,9 +84,9 @@ Tensor ConvolutionLayer::forward(const Tensor& T){
 Tensor ConvolutionLayer::backward(const Tensor& gradient){
   //initializing gradient tensors and descriptor parameters
   
-  iGrad = Tensor(input.dimensions, TensorLocation::GPU, input.n);
-  bGrad = Tensor(bias.dimensions, TensorLocation::GPU, bias.n);
-  fGrad = Tensor(filters.dimensions, TensorLocation::GPU, filters.n);
+  this->iGrad = Tensor(input.dimensions, TensorLocation::GPU, input.n);
+  this->bGrad = Tensor(bias.dimensions, TensorLocation::GPU, bias.n);
+  this->fGrad = Tensor(filters.dimensions, TensorLocation::GPU, filters.n);
   //bad naming, first two for filter, last two for the returned gradient
   cudnnConvolutionBwdFilterAlgoPerf_t potential;
   cudnnConvolutionBwdFilterAlgo_t algo;
@@ -127,7 +121,6 @@ Tensor ConvolutionLayer::backward(const Tensor& gradient){
   }
   return iGrad;
 }
-
 
 void ConvolutionLayer::genTensorData(){
   Generator::tGen(bias);
@@ -171,7 +164,6 @@ void ConvolutionLayer::cleanSave(std::ofstream& oF){
   bias.gpuSend();
 }
 
-
 ConvolutionLayer::~ConvolutionLayer(){
   TryCuda(cudnnDestroyFilterDescriptor(filterD));
   TryCuda(cudnnDestroyTensorDescriptor(inputD));
@@ -179,3 +171,8 @@ ConvolutionLayer::~ConvolutionLayer(){
   TryCuda(cudnnDestroyTensorDescriptor(biasD));
   TryCuda(cudnnDestroyConvolutionDescriptor(convoD));
 }
+
+std::pair<std::vector<Tensor*>, std::vector<Tensor*>> ConvolutionLayer::getLearningData(){
+  return {{&filters, &bias}, {&fGrad, &bGrad}};
+}
+

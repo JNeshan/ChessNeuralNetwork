@@ -46,16 +46,15 @@ __global__ void copyKernel(const int s, const float* r, float* data){
 
 
 
-curandGenerator_t Generator::cGen = createCurand();
+thread_local curandGenerator_t Generator::cGen = createCurand();
 
 Generator::Generator(){
   int a = 0;
 }
 
-void Generator::tGen(const Tensor& T){
+void Generator::tGen(Tensor& T){
   float* output = T.gpuData();
   TryCuda(curandGenerateUniform(cGen, output, T.size));
-  return;
 }
 
 void Generator::dGen(const int s, float* data){

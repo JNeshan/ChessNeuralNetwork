@@ -7,6 +7,7 @@
 #include <iostream>
 #include <fstream>
 #include <cuda_fp16.h>
+#include <type_traits>
 
 enum class TensorLocation {CPU, GPU};
 //The tensor class wraps a pointer to a contiguous array with data to represent it as an n-dimensional matrix, along with
@@ -29,6 +30,7 @@ enum class TensorLocation {CPU, GPU};
 //
 //
 
+template <typename T>
 class Tensor {
 public:
     Tensor(); //blank constructor

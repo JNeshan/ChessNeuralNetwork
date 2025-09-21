@@ -7,13 +7,16 @@
 class tanhLayer : public Layer {
 public:
   tanhLayer();
+  tanhLayer(const tanhLayer& lay);
   virtual ~tanhLayer();
-  virtual Tensor forward(const Tensor& T, bool train) override;
-  virtual Tensor backward(const Tensor& gradient) override;
+  virtual Tensor forward(Tensor& T, bool train) override;
+  virtual Tensor backward(Tensor& gradient) override;
   virtual void genTensorData() override;
   virtual void loadTensor(std::ifstream& iF) override;
   virtual void saveTensor(std::ofstream& oF) override;
-  virtual void cleanSave(std::ofstream& oF) override;
+  virtual void cleanSave(std::ofstream& oF) override; 
+
+  virtual std::unique_ptr<Layer> clone() override;
   virtual std::pair<std::vector<Tensor*>, std::vector<Tensor*>> getLearningData() override;
 
 private:

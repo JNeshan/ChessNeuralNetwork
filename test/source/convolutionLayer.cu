@@ -2,7 +2,7 @@
 #include <cuda_runtime.h>
 #include <cudnn.h>
 #include <stdexcept>
-
+#include <chrono>
 __inline__ void TryCuda(cudaError_t err){
   if(err != cudaSuccess){
     fprintf(stderr, "CUDA Error in %s at line %d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err));
@@ -27,99 +27,158 @@ cudnnTensorDescriptor_t inputD, outputD; cudnnConvolutionDescriptor_t convoD;
 cudnnFilterDescriptor_t filterD; cudnnTensorDescriptor_t biasD;
 */
 
-
-ConvolutionLayer::ConvolutionLayer(const int fC, const int iC, const int fH, const int fW) : bias({fC}, TensorLocation::GPU), filters({fC, iC, fH, fW}, TensorLocation::GPU){
+ConvolutionLayer::ConvolutionLayer(const int fC, const int iC, const int fH, const int fW, const int pad) : forw(false), back(false), bias({1, fC}, TensorLocation::GPU), filters({fC, iC, fH, fW}, TensorLocation::GPU), fGrad({fC, iC, fH, fW}, TensorLocation::GPU), bGrad({1, fC}, TensorLocation::GPU), padding(pad){
   TryCuda(cudnnCreateTensorDescriptor(&inputD));
   TryCuda(cudnnCreateTensorDescriptor(&outputD));
   TryCuda(cudnnCreateTensorDescriptor(&biasD));
   TryCuda(cudnnCreateFilterDescriptor(&filterD));
   TryCuda(cudnnCreateConvolutionDescriptor(&convoD));
+  TryCuda(cudnnCreateActivationDescriptor(&this->actD));
   TryCuda(cudnnSetFilter4dDescriptor(filterD, CUDNN_DATA_FLOAT, CUDNN_TENSOR_NCHW, fC, iC, fH, fW));
   TryCuda(cudnnSetTensor4dDescriptor(biasD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, 1, fC, 1, 1));
-  TryCuda(cudnnSetConvolution2dDescriptor(convoD, 0, 0, 1, 1, 1, 1, CUDNN_CROSS_CORRELATION, CUDNN_DATA_FLOAT));
+  TryCuda(cudnnSetConvolution2dDescriptor(convoD, padding, padding, 1, 1, 1, 1, CUDNN_CROSS_CORRELATION, CUDNN_DATA_FLOAT));
+  TryCuda(cudnnSetConvolutionMathType(this->convoD, CUDNN_TENSOR_OP_MATH));
+  TryCuda(cudnnSetActivationDescriptor(this->actD, CUDNN_ACTIVATION_IDENTITY, CUDNN_NOT_PROPAGATE_NAN, 0.0));
+  this->convoAlgo = CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_PRECOMP_GEMM;
+  this->wsPtrF = nullptr;
+  this->wsPtrB = nullptr;
 }
 
-Tensor ConvolutionLayer::forward(const Tensor& T, bool train){
+ConvolutionLayer::ConvolutionLayer(const ConvolutionLayer& lay) : padding(lay.padding), filters(lay.filters), bias(lay.bias), fGrad(lay.fGrad), bGrad(lay.bGrad){
+  const auto [k, c, h, w] = std::tie(lay.filters.dimensions[0], lay.filters.dimensions[1], lay.filters.dimensions[2], lay.filters.dimensions[3]);
+  TryCuda(cudnnCreateTensorDescriptor(&this->inputD));
+  TryCuda(cudnnCreateTensorDescriptor(&this->outputD));
+  TryCuda(cudnnCreateTensorDescriptor(&this->biasD));
+  TryCuda(cudnnCreateFilterDescriptor(&this->filterD));
+  TryCuda(cudnnCreateConvolutionDescriptor(&this->convoD));
+  TryCuda(cudnnCreateActivationDescriptor(&this->actD));
+  TryCuda(cudnnSetFilter4dDescriptor(this->filterD, CUDNN_DATA_FLOAT, CUDNN_TENSOR_NCHW, k, c, h, w));
+  TryCuda(cudnnSetTensor4dDescriptor(this->biasD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, 1, k, 1, 1));
+  TryCuda(cudnnSetConvolution2dDescriptor(this->convoD, this->padding, this->padding, 1, 1, 1, 1, CUDNN_CROSS_CORRELATION, CUDNN_DATA_FLOAT));
+  TryCuda(cudnnSetConvolutionMathType(this->convoD, CUDNN_TENSOR_OP_MATH));
+  TryCuda(cudnnSetActivationDescriptor(this->actD, CUDNN_ACTIVATION_IDENTITY, CUDNN_NOT_PROPAGATE_NAN, 0.0));
+
+  this->convoAlgo = CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_PRECOMP_GEMM;
+  this->forw = false;
+  this->back = false;
+  this->wsSizeF = 0;
+  this->wsSizeB = 0;
+  this->wsPtrF = nullptr;
+  this->wsPtrB = nullptr;
+}
+
+ConvolutionLayer::~ConvolutionLayer(){
+  TryCuda(cudnnDestroyFilterDescriptor(this->filterD));
+  TryCuda(cudnnDestroyTensorDescriptor(this->inputD));
+  TryCuda(cudnnDestroyTensorDescriptor(this->outputD));
+  TryCuda(cudnnDestroyTensorDescriptor(this->biasD));
+  TryCuda(cudnnDestroyConvolutionDescriptor(this->convoD));
+  if(this->wsPtrF != nullptr){ //frees the workspace if it was used
+    TryCuda(cudaFree(this->wsPtrF));
+  }
+  if(this->wsPtrB != nullptr){
+    TryCuda(cudaFree(this->wsPtrB));
+  }
+}
+
+
+std::unique_ptr<Layer> ConvolutionLayer::clone(){
+  return(std::make_unique<ConvolutionLayer>(*this));
+}
+
+Tensor ConvolutionLayer::forward(Tensor& T, bool train){
+  auto start = std::chrono::steady_clock::now();
+  auto elapsed = std::chrono::steady_clock::now() - start;
   int n = T.dimensions[0], c = T.dimensions[1], h = T.dimensions[2], w = T.dimensions[3];
-  this->input = Tensor(T);
-  //setting descriptors, calculating output dimensions
+  if(filters.dimensions[1] != T.dimensions[1]){
+    throw std::runtime_error("Incorrect input channels for convolutional layer");
+  }
   TryCuda(cudnnSetTensor4dDescriptor(inputD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, n, c, h, w)); //input
   TryCuda(cudnnGetConvolution2dForwardOutputDim(convoD, inputD, filterD, &n, &c, &h, &w)); //calculates the dimension sizes that the output will have
   TryCuda(cudnnSetTensor4dDescriptor(outputD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, n, c, h, w)); //output
+
+  
   Tensor output({n, c, h, w}, TensorLocation::GPU); //readies return tensor
+  
   //variables for convolution algorithm and workspace memory
-  cudnnConvolutionFwdAlgoPerf_t potential;
-  cudnnConvolutionFwdAlgo_t algo;
-  int algoCount = 0;
-  size_t wsSize = 0;
-  void* workspace = nullptr;
-  float a = 1.0f, b = 1.0f, b2 = 0.0f; //alpha betas
-  //finds the best convolution algorithm to use
-  TryCuda(cudnnFindConvolutionForwardAlgorithm(nnHandle, inputD, filterD, convoD, 
-                                              outputD, 1, &algoCount, &potential));
-  if(algoCount == 0){ //safety check if none are found
-    throw std::runtime_error("cuDNN failed to find convolution");
-  }
-  algo = potential.algo; 
-  //determines the necessary workspace size for convolution
-  TryCuda(cudnnGetConvolutionForwardWorkspaceSize(nnHandle, inputD, filterD, 
-                                                  convoD, outputD, algo, &wsSize));
-  if(wsSize > 0){ //allocates necessary workspace space if any
-    TryCuda(cudaMalloc((void**)&workspace, wsSize));
-  }
-  //performs convolution
-  TryCuda(cudnnConvolutionForward(nnHandle, &mx, inputD, T.gpuData(), filterD, 
-                          filters.gpuData(), convoD, algo, workspace, 
-                          wsSize, &mn, outputD, output.gpuData()));
-  //freeing memory
-  if(workspace != nullptr){ //frees the workspace if it was used
-    TryCuda(cudaFree(workspace));
+  //void* workspace = nullptr;
+  
+  if(!this->forw){ //very time consuming to get the optimal algorithm and details so it only does it once, could replace with a map since it'll always be relative to batch size
+    TryCuda(cudnnGetConvolutionForwardWorkspaceSize(this->nnHandle, this->inputD, this->filterD, 
+                                                  this->convoD, this->outputD, this->convoAlgo, &this->wsSizeF));
+    
+    if(this->wsSizeF > 0){ //allocates necessary workspace space if any
+      TryCuda(cudaMalloc((void**)&this->wsPtrF, this->wsSizeF));
+    }
+
+    this->forw = true;
   }
 
-  //performs bias addition
-  TryCuda(cudnnAddTensor(nnHandle, &mx, biasD, bias.gpuData(), &mx, outputD, output.gpuData()));  
-  return output;
+  //performs convolution
+  //cudaDeviceSynchronize();
+  //auto startL = std::chrono::steady_clock::now();
+  TryCuda(cudnnConvolutionBiasActivationForward(this->nnHandle, &mx, this->inputD, T.gpuData(), this->filterD, this->filters.gpuData(), this->convoD, this->convoAlgo,
+                                                this->wsPtrF, this->wsSizeF, &mn, this->outputD, output.gpuData(), this->biasD, this->bias.gpuData(), this->actD,
+                                                this->outputD, output.gpuData()));
+  //cudaDeviceSynchronize();
+  //elapsed = std::chrono::steady_clock::now() - startL;
+  ////std::cout<<std::string("Time in convolution op: ") + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count())<<std::endl;  
+  
+
+  if(train){
+    this->input = std::move(T);
+  }
+  elapsed = std::chrono::steady_clock::now() - start;
+  //std::cout<<std::string("Time in convolution: ") + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count())<<std::endl;  
+  return std::move(output);
 }
 
-Tensor ConvolutionLayer::backward(const Tensor& gradient){
+Tensor ConvolutionLayer::backward(Tensor& gradient){
+  auto start = std::chrono::steady_clock::now();
+  Tensor iGrad = Tensor(this->input.dimensions, TensorLocation::GPU);
+  
   //initializing gradient tensors and descriptor parameters
   
-  this->iGrad = Tensor(input.dimensions, TensorLocation::GPU, input.n);
-  this->bGrad = Tensor(bias.dimensions, TensorLocation::GPU, bias.n);
-  this->fGrad = Tensor(filters.dimensions, TensorLocation::GPU, filters.n);
   //bad naming, first two for filter, last two for the returned gradient
-  cudnnConvolutionBwdFilterAlgoPerf_t potential;
-  cudnnConvolutionBwdFilterAlgo_t algo;
-  cudnnConvolutionBwdDataAlgoPerf_t dataPot;
-  cudnnConvolutionBwdDataAlgo_t dataAlgo;
-
-  int algoCount = 0;
-  size_t wsSize = 0, wsSizeTmp;
-  void* workspace = nullptr;
-  //applies back propagation through the convolutions bias
-  TryCuda(cudnnConvolutionBackwardBias(nnHandle, &mx, outputD, gradient.gpuData(), &mn, biasD, bGrad.gpuData()));
-  TryCuda(cudnnFindConvolutionBackwardDataAlgorithm(nnHandle, filterD, outputD, convoD, inputD, 1, &algoCount, &dataPot));
-  TryCuda(cudnnFindConvolutionBackwardFilterAlgorithm(nnHandle, inputD, outputD, convoD, filterD, 1, &algoCount, &potential));
-  dataAlgo = dataPot.algo;
-  algo = potential.algo;
-  TryCuda(cudnnGetConvolutionBackwardDataWorkspaceSize(nnHandle, filterD, outputD, convoD, inputD, dataAlgo, &wsSize));
-  TryCuda(cudnnGetConvolutionBackwardFilterWorkspaceSize(nnHandle, inputD, outputD, convoD, filterD, algo, &wsSizeTmp));
-  wsSize = std::max(wsSize, wsSizeTmp);
-  if(wsSize > 0){ //allocates space for workspace if necessary, uses the higher space requirement so both can use the same allocation on their turn
-    TryCuda(cudaMalloc((void**)&workspace, wsSize));
-  }
-
-  TryCuda(cudnnConvolutionBackwardData(nnHandle, &mx, filterD, filters.gpuData(), outputD, 
-                                      gradient.gpuData(), convoD, dataAlgo, workspace, wsSize, &mn, 
-                                      inputD, iGrad.gpuData()));
   
-  TryCuda(cudnnConvolutionBackwardFilter(nnHandle, &mx, inputD, input.gpuData(), outputD, gradient.gpuData(), 
-                                        convoD, algo, workspace, wsSize, &mn, filterD, fGrad.gpuData()));
-  if(workspace != nullptr){
-    TryCuda(cudaFree(workspace));
-    workspace = nullptr;
+  //applies back propagation through the convolutions bias
+
+  if(!this->back){
+    int algoCount = 0;
+    size_t wsSizeX = 0, wsSizeY;
+    cudnnConvolutionBwdFilterAlgoPerf_t potential;
+    cudnnConvolutionBwdDataAlgoPerf_t dataPot;
+    TryCuda(cudnnConvolutionBackwardBias(this->nnHandle, &mx, this->outputD, gradient.gpuData(), &mn, this->biasD, this->bGrad.gpuData()));
+    TryCuda(cudnnFindConvolutionBackwardDataAlgorithm(this->nnHandle, this->filterD, this->outputD, this->convoD, this->inputD, 1, &algoCount, &dataPot));
+    TryCuda(cudnnFindConvolutionBackwardFilterAlgorithm(this->nnHandle, this->inputD, this->outputD, this->convoD, this->filterD, 1, &algoCount, &potential));
+    this->backDataAlgo = dataPot.algo;
+    this->backFilterAlgo = potential.algo;
+    TryCuda(cudnnGetConvolutionBackwardDataWorkspaceSize(this->nnHandle, this->filterD, this->outputD, this->convoD, this->inputD, this->backDataAlgo, &wsSizeX));
+    TryCuda(cudnnGetConvolutionBackwardFilterWorkspaceSize(this->nnHandle, this->inputD, this->outputD, this->convoD, this->filterD, this->backFilterAlgo, &wsSizeY));
+    
+    
+    this->wsSizeB = std::max(wsSizeX, wsSizeY);
+    if(this->wsSizeB > 0){ //allocates space for workspace if necessary, uses the higher space requirement so both can use the same allocation on their turn
+      TryCuda(cudaMalloc((void**)&this->wsPtrB, this->wsSizeB));
+    }
+    this->back = true;
   }
-  return iGrad;
+
+  TryCuda(cudnnConvolutionBackwardFilter(this->nnHandle, &mx, this->inputD, this->input.gpuData(), this->outputD, gradient.gpuData(), 
+                                        this->convoD, this->backFilterAlgo, this->wsPtrB, this->wsSizeB, &mn, this->filterD, fGrad.gpuData()));
+
+  TryCuda(cudnnConvolutionBackwardData(this->nnHandle, &mx, this->filterD, this->filters.gpuData(), this->outputD, 
+                                      gradient.gpuData(), this->convoD, this->backDataAlgo, this->wsPtrB, this->wsSizeB, &mn, 
+                                      this->inputD, this->input.gpuData()));
+
+  //TryCuda(cudnnConvolutionBackwardData(nnHandle, &mx, filterD, filters.gpuData(), outputD, 
+  //                                    gradient.gpuData(), convoD, dataAlgo, workspace, wsSize, &mn, 
+  //                                    inputD, iGrad.gpuData()));
+  
+  auto elapsed = std::chrono::steady_clock::now() - start;
+  //::cout<<std::string("Time in convolution back: ") + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count())<<std::endl;  
+  
+  return std::move(input);
 }
 
 void ConvolutionLayer::genTensorData(){
@@ -162,14 +221,6 @@ void ConvolutionLayer::cleanSave(std::ofstream& oF){
   bias.writeTensor(oF);
   filters.gpuSend();
   bias.gpuSend();
-}
-
-ConvolutionLayer::~ConvolutionLayer(){
-  TryCuda(cudnnDestroyFilterDescriptor(filterD));
-  TryCuda(cudnnDestroyTensorDescriptor(inputD));
-  TryCuda(cudnnDestroyTensorDescriptor(outputD));
-  TryCuda(cudnnDestroyTensorDescriptor(biasD));
-  TryCuda(cudnnDestroyConvolutionDescriptor(convoD));
 }
 
 std::pair<std::vector<Tensor*>, std::vector<Tensor*>> ConvolutionLayer::getLearningData(){

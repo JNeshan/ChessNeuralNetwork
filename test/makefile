@@ -1,5 +1,5 @@
-CXXFLAGS = -std=c++11
-NVCCFLAGS = -arch=sm_89 -g -G
+CXXFLAGS = -std=c++17 -O2
+NVCCFLAGS = -arch=sm_89 -g -G -O2
 LIBS = -lcudnn -lcublas -lcudart -lcurand
 SRCDIR = ./source
 HDRDIR = ./header
@@ -13,12 +13,17 @@ INCLUDES = -I$(HDRDIR) -I$(CHESSHDIR)
 
 
 .PHONY : program clean
-
+.PRECIOUS : main
 program: main
-	rm -rf *.o
+
+debug: main
+	./clrChess.sh
+	gdb ./main
+
 
 main : main.o $(CHESSOBJ) $(CUOBJ)
 	g++ $(CXXFLAGS) -o $@ main.o $(CHESSOBJ) $(CUOBJ) $(LIBS)
+	./clrChess.sh
 	./main
 
 main.o : main.cpp

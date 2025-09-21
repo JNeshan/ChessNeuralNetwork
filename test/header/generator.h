@@ -13,7 +13,7 @@ struct cuRAND;
 class Generator{
 public:
   Generator();
-  static void tGen(const Tensor& T);
+  static void tGen(Tensor& T);
   //populates data with random values
   static void dGen(const int s, float* data);
   //populates data with ascending values starting at 0
@@ -24,7 +24,7 @@ public:
   static void copy(const int s, const float* r, float* data);
 
 private:
-  static curandGenerator_t cGen;
+  thread_local static curandGenerator_t cGen;
 
 };
 

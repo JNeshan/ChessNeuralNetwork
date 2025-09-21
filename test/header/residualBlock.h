@@ -15,10 +15,14 @@
 class ResidualBlock : public Layer{
 public:
   ResidualBlock();
-  ResidualBlock(const int channels, const int filterSize, const int filterCount);
-  void appendLayers(NeuralNetwork& net);
-  virtual Tensor forward(const Tensor& T, bool train) override;
-  virtual Tensor backward(const Tensor& gradient) override;
+  ResidualBlock(const ResidualBlock& lay);
+  virtual ~ResidualBlock();
+  virtual std::unique_ptr<Layer> clone() override;
+  //ResidualBlock(const int channels, const int filterSize, const int filterCount);
+  //void appendLayers(NeuralNetwork& net);
+  virtual Tensor forward(Tensor& T, bool train) override;
+  virtual Tensor backward(Tensor& gradient) override;
+  virtual void genTensorData() override;
   virtual void loadTensor(std::ifstream& iF);
   virtual void saveTensor(std::ofstream& oF);
   virtual void cleanSave(std::ofstream& oF);

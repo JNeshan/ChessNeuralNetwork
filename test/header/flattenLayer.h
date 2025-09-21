@@ -1,16 +1,12 @@
-//softmaxLayer.h
-#ifndef SOFTMAXLAYER_H
-#define SOFTMAXLAYER_H
-
+#ifndef FLATTENLAYER_H
+#define FLATTENLAYER_H
 #include "layer.h"
 
-class SoftmaxLayer : public Layer{
+class FlattenLayer : public Layer {
 public:
-  SoftmaxLayer();
-  SoftmaxLayer(const SoftmaxLayer& lay);
-  virtual ~SoftmaxLayer();
-
-
+  FlattenLayer();
+  FlattenLayer(const FlattenLayer& lay);
+  virtual ~FlattenLayer();
   virtual Tensor forward(Tensor& T, bool train) override;
   virtual Tensor backward(Tensor& gradient) override;
   virtual void genTensorData() override;
@@ -20,14 +16,8 @@ public:
 
   virtual std::unique_ptr<Layer> clone() override;
   virtual std::pair<std::vector<Tensor*>, std::vector<Tensor*>> getLearningData() override;
-
 private:
-  Tensor output;
-  std::vector<int> dimensions;
-  const int outFeat;
-  int n;
-  cudnnTensorDescriptor_t tensorD;
+  std::vector<int> inpDim;
 };
-
 
 #endif

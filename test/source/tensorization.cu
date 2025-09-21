@@ -10,7 +10,7 @@ En Passant
 Tensorization::Tensorization(){}
 
 Tensor Tensorization::tensorize(const chessState& state){
-  Tensor T({17, 8, 8}, TensorLocation::CPU);
+  Tensor T({1, 17, 8, 8}, TensorLocation::CPU);
   float* data = T.cpuData();
   int p = 0;
   std::array<uint64_t, 6> whiteBitboard = state.bitboards[0], blackBitboard = state.bitboards[1];
@@ -44,3 +44,6 @@ Tensor Tensorization::tensorize(const chessState& state){
   }
   return T;
 }
+
+
+

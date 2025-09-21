@@ -40,44 +40,45 @@ __global__ void AddKernel(const float* A, const float* B, float* out, const int 
 }
 
 Tensor::~Tensor() {
-  if(size == -1){ //blank tensor
+  if(this->size <= 0 || this->data == nullptr){ //blank tensor
     return;
   }
-  if(device == TensorLocation::GPU){ //lazy delete
-    TryCuda(cudaFree(data));
-    size = -1;
+  if(this->device == TensorLocation::GPU){ //lazy delete
+    TryCuda(cudaFree(this->data));
+    this->size = -1;
     return;
   }
-  delete[] data;
+
+  delete[] this->data;
 }
 
 Tensor::Tensor() : size(-1), device(TensorLocation::CPU), data(nullptr), dimensions() {}
 
-Tensor::Tensor(const std::vector<int>& dim, const TensorLocation loc, const int nth) : n(nth), dimensions(dim), device(loc){
+Tensor::Tensor(const std::vector<int>& dim, const TensorLocation loc, int nth) : n(nth), dimensions(dim), device(loc){
   if(dim.size() == 0){
     throw std::invalid_argument("Tensor dimensions empty");
   }
-  if(!n){ //nth defaults to 0 if no dimension count is given so dim can instead relay the proper n as long as it is not padded
-    n = dim.size();
+  if(!nth){ //nth defaults to 0 if no dimension count is given so dim can instead relay the proper n as long as it is not padded
+    this->n = dim.size();
   }
 
-  size = 1;
+  this->size = 1;
   for(auto d : dim){
-    if(d < 1) throw("Non-positive dimension size");
-    size *= d;
+    if(d < 1) throw std::runtime_error("Non-positive dimension size");
+    this->size *= d;
   }
 
-  while(dimensions.size() < 4 || dimensions.size() < n){
-    dimensions.push_back(1);
+  while(this->dimensions.size() < 4 || this->dimensions.size() < n){
+    this->dimensions.push_back(1);
   }
 
   if(loc == TensorLocation::CPU){
-    device = TensorLocation::CPU;
-    data = new float[size]();
+    this->device = TensorLocation::CPU;
+    this->data = new float[this->size]();
   }
   else{
     device = TensorLocation::GPU;
-    TryCuda(cudaMalloc((void**)&data, size * sizeof(float)));
+    TryCuda(cudaMalloc((void**)&data, this->size * sizeof(float)));
   }
 }
 
@@ -98,9 +99,8 @@ Tensor::Tensor(const Tensor& r){
   }
 }
 
-Tensor::Tensor(Tensor&& r) : dimensions(r.dimensions), size(r.size), data(r.data), device(r.device){
+Tensor::Tensor(Tensor&& r) : dimensions(r.dimensions), size(r.size), data(r.data), device(r.device), n(r.n){
   r.data = nullptr;
-  r.size = 0;
 }
 
 Tensor& Tensor::operator=(Tensor&& r){
@@ -145,46 +145,19 @@ Tensor& Tensor::operator=(const Tensor& r){
   this->dimensions = r.dimensions;
   this->n = r.n;
   this->data = nullptr;
-  if(device == TensorLocation::GPU){
-    TryCuda(cudaMalloc((void**)&data, size * sizeof(float)));
-    TryCuda(cudaMemcpy(data, r.data, size * sizeof(float), cudaMemcpyDeviceToDevice));
+  if(this->device == TensorLocation::GPU){
+    TryCuda(cudaMalloc((void**)&data, this->size * sizeof(float)));
+    TryCuda(cudaMemcpy(data, r.data, this->size * sizeof(float), cudaMemcpyDeviceToDevice));
   }
   else{
-    this->data = new float[size];
-    memcpy(data, r.data, size * sizeof(float));
+    this->data = new float[this->size];
+    memcpy(this->data, r.data, this->size * sizeof(float));
   }
   return *this;
 }
 
-void Tensor::batch(Tensor& B){
-  int nSize = this->size + B.size;
-  if(this->device == TensorLocation::CPU){
-    B.cpuSend();
-    float* aStart = new float[nSize];
-    float* bStart = aStart + this->size;
-    std::move(this->data, this->data + this->size, aStart);
-    std::move(B.data, B.data + B.size, bStart);
-    delete[] this->data;
-    this->data = aStart;
-  }
-  else{
-    B.gpuSend();
-    float* aStart = nullptr;
-    float* bStart = nullptr;
-    TryCuda(cudaMalloc((void**)&aStart, nSize * sizeof(float)));
-    TryCuda(cudaMemcpy(aStart, this->data, this->size * sizeof(float), cudaMemcpyDeviceToDevice));
-    bStart = aStart + this->size;
-    TryCuda(cudaMemcpy(bStart, B.data, B.size * sizeof(float), cudaMemcpyDeviceToDevice));
-    TryCuda(cudaFree(this->data));
-    this->data = aStart;
-  }
-  this->size = nSize;
-  this->dimensions[0] += B.dimensions[0];
-  return;
-}
-
 float* Tensor::cpuData() const{
-  if(device == TensorLocation::GPU){
+  if(this->device == TensorLocation::GPU){
     throw std::invalid_argument("Data stored on GPU");
   }
   else if(data == nullptr){
@@ -194,7 +167,7 @@ float* Tensor::cpuData() const{
 }
 
 float* Tensor::gpuData() const{
-  if(device == TensorLocation::CPU){
+  if(this->device == TensorLocation::CPU){
     throw std::invalid_argument("Data stored on CPU");
   }
   else if(data == nullptr){
@@ -204,54 +177,167 @@ float* Tensor::gpuData() const{
 }
 
 void Tensor::cpuSend(){
-  if(device == TensorLocation::CPU){
+  if(this->device == TensorLocation::CPU){
+    //std::cout<<"Already on CPU"<<std::endl;
     return;
   }
-  if(data == nullptr){
-    throw(std::invalid_argument("Data has not been allocated"));
+  if(this->data == nullptr){
+    throw std::invalid_argument("Data has not been allocated");
   }
-  float* tmpData = new float[size];
-  TryCuda(cudaMemcpy(tmpData, data, size * sizeof(float), cudaMemcpyDeviceToHost));
+  if(this->size <= 0){
+    this->device == TensorLocation::CPU;
+    return;
+  }
+  float* tmpData = new float[this->size];
+  TryCuda(cudaMemcpy(tmpData, this->data, this->size * sizeof(float), cudaMemcpyDeviceToHost));
   TryCuda(cudaFree(data));
-  data = tmpData;
-  device = TensorLocation::CPU;
+  this->data = tmpData;
+  tmpData = nullptr;
+  this->device = TensorLocation::CPU;
 }
 
 void Tensor::gpuSend(){
 
-  if(device == TensorLocation::GPU){
-    std::cout<<"Tensor already in GPU memory"<<std::endl;
+  if(this->device == TensorLocation::GPU){
+   // std::cout<<"Tensor already in GPU memory"<<std::endl;
     return; //already in gpu memory
   }
-  if(data == nullptr){
-    throw(std::invalid_argument("Data has not been allocated"));
+  if(this->data == nullptr){
+    throw std::invalid_argument("Data has not been allocated");
+  }
+  if(this->size <= 0){
+    this->device == TensorLocation::GPU;
+    return;
   }
   float* tmpData;
   TryCuda(cudaMalloc((void**)&tmpData, size * sizeof(float))); //allocating memory within the GPU
   TryCuda(cudaMemcpy(tmpData, data, size * sizeof(float), cudaMemcpyHostToDevice));  //copying into GPU memory
   
-  delete[] data;
-  data = tmpData;
-  device = TensorLocation::GPU;
+  delete[] this->data;
+  this->data = tmpData;
+  tmpData = nullptr;
+  this->device = TensorLocation::GPU;
 }
 
 void Tensor::reshape(const std::vector<int>& dim, const int nth){
   int s = 1;
   for(auto d : dim){
-    if(d < 1) throw("Non-positive dimension rehsape size");
+    if(d < 1){
+      throw std::runtime_error("Non-positive dimension rehsape size");
+    }
     s *= d;
   }
 
   if(s != size){ //the new shape must have the same size as the previous to be valid
-    throw("Different reshape size");
+    throw std::runtime_error("Different reshape size");
   }
-  n = nth;
-  dimensions = dim;
-  while(dimensions.size() < 4){
-    dimensions.push_back(1);
+  this->n = nth;
+  this->dimensions = dim;
+  while(this->dimensions.size() < 4){
+    this->dimensions.push_back(1);
   }
 }
 
+Tensor Tensor::segment(const int n_i){
+  try
+  {
+    if(n_i < 0 || n_i > this->dimensions[0]){
+      throw std::runtime_error("Bad batch index to copy");
+    }
+      std::vector<int> tDim = this->dimensions;
+      tDim[0] = 1;
+      Tensor T(tDim, this->device, this->n);
+      int ind = n_i * (this->size / this->dimensions[0]);
+      if(this->device == TensorLocation::CPU){
+        
+        memcpy(T.cpuData(), this->data + ind, T.size * sizeof(float));
+      }
+      else{
+        TryCuda(cudaMemcpy(T.gpuData(), this->data + ind, T.size * sizeof(float), cudaMemcpyDeviceToDevice));
+      }
+    return std::move(T);
+  }
+  catch(const std::exception& e)
+  {
+    std::cerr << e.what() << '\n';
+  }
+  return Tensor();
+}
+//dont use
+Tensor::Tensor(std::vector<Tensor>& t) : dimensions(t[0].dimensions), size(t[0].size), n(t[0].n){
+  this->dimensions[0] = t.size();
+  this->size *= this->dimensions[0];
+}
+
+void Tensor::batchBuild(const std::vector<Tensor*>& t, const TensorLocation loc){
+  if(t.size() == 0){
+    throw std::runtime_error("Empty batch vector");
+  }
+  this->dimensions = t[0]->dimensions;
+  this->dimensions[0] = t.size();
+  this->size = t[0]->size * t.size();
+  this->n = t[0]->n;
+  this->device = loc;
+  if(loc == TensorLocation::CPU){
+    this->data = new float[this->size];
+    int i = 0;
+    for(auto tensor : t){
+      auto idx = this->data + (i * tensor->size);
+      if(tensor->device == TensorLocation::CPU){
+        memcpy(idx, tensor->cpuData(), tensor->size * sizeof(float));
+      }
+      else{
+        TryCuda(cudaMemcpy(idx, tensor->gpuData(), tensor->size * sizeof(float), cudaMemcpyDeviceToHost));
+      }
+      i++;
+    }
+  }
+  else{
+    TryCuda(cudaMalloc((void**)&this->data, this->size * sizeof(float)));
+    int i = 0;
+    for(auto tensor : t){
+      auto idx = this->data + (i * tensor->size);
+      auto cudaCpy = tensor->device == TensorLocation::GPU ? cudaMemcpyDeviceToDevice : cudaMemcpyHostToDevice;
+      TryCuda(cudaMemcpy(idx, tensor->data, tensor->size * sizeof(float), cudaCpy));
+      i++;
+    }
+  }
+}
+
+void Tensor::batchBuild(const std::vector<Tensor>& t, const TensorLocation loc){
+  if(t.size() == 0){
+    throw std::runtime_error("Empty batch vector");
+  }
+  this->dimensions = t[0].dimensions;
+  this->dimensions[0] = t.size();
+  this->size = t[0].size * t.size();
+  this->n = t[0].n;
+  this->device = loc;
+  if(loc == TensorLocation::CPU){
+    this->data = new float[this->size];
+    int i = 0;
+    for(auto& tensor : t){
+      auto idx = this->data + (i * tensor.size);
+      if(tensor.device == TensorLocation::CPU){
+        memcpy(idx, tensor.cpuData(), tensor.size * sizeof(float));
+      }
+      else{
+        TryCuda(cudaMemcpy(idx, tensor.gpuData(), tensor.size * sizeof(float), cudaMemcpyDeviceToHost));
+      }
+      i++;
+    }
+  }
+  else{
+    TryCuda(cudaMalloc((void**)&this->data, this->size * sizeof(float)));
+    int i = 0;
+    for(auto tensor : t){
+      auto idx = this->data + (i * tensor.size);
+      auto cudaCpy = tensor.device == TensorLocation::GPU ? cudaMemcpyDeviceToDevice : cudaMemcpyHostToDevice;
+      TryCuda(cudaMemcpy(idx, tensor.data, tensor.size * sizeof(float), cudaCpy));
+      i++;
+    }
+  }
+}
 //appending
 void Tensor::writeTensor(std::ofstream& oF){
   int width = 16, precision = 14;
@@ -261,6 +347,7 @@ void Tensor::writeTensor(std::ofstream& oF){
   }
   if(data == nullptr || size <= 0){
     std::cout<<"Tensor not allocated"<<std::endl;
+    return;
   }
   if(device == TensorLocation::GPU){
     this->cpuSend();
@@ -324,15 +411,19 @@ void Tensor::readBinary(std::ifstream& iF){
 }
 
 void Tensor::gpuAdd(Tensor& B){
+
   if(this->size != B.size){
-    throw("Different sizes for addition");
+    throw std::runtime_error("Different sizes for addition");
   }
   this->gpuSend();
   B.gpuSend();
+  
+  float* bData = B.gpuData();
+  float* aData = this->gpuData();
 
-  float* bData = B.gpuData(), *aData = this->gpuData();
   int n = this->dimensions[0], m = this->size / n, thrdCnt = 256;
   dim3 gridDim((this->size + thrdCnt - 1) / thrdCnt), blockDim(thrdCnt);
+
   AddKernel<<<gridDim, blockDim>>>(aData, bData, aData, n, m);
 }
 

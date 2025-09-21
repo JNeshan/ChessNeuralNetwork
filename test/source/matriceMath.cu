@@ -31,18 +31,18 @@ __global__ void AddKernelM(const float* input, const float* bias, float* out, co
 MatriceMath::MatriceMath(){
   cudnnStatus_t nnErr = cudnnCreate(&cudnn);
   if(nnErr != CUDNN_STATUS_SUCCESS){
-    throw("Bad cudnn");   
+    throw std::runtime_error("Bad cudnn");   
   }
   cublasStatus_t blasErr = cublasCreate_v2(&cublas);  
   if(blasErr != CUBLAS_STATUS_SUCCESS){
-    throw("Bad cublas");
+    throw std::runtime_error("Bad cublas");
   }
   std::cout<<"Handles created"<<std::endl;
 }
 
 void MatriceMath::add(const Tensor& N, const Tensor& B, Tensor& O){
   if(N.size != B.size || N.size != O.size){
-    throw("Different sizes on addition");
+    throw std::runtime_error("Different sizes on addition");
   }
 
   const float* bias = B.gpuData(), *input = N.gpuData();

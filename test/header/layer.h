@@ -11,15 +11,17 @@
 #include <fstream>
 #include <stdexcept>
 #include <vector>
+#include <chrono>
 #include "generator.h"
 
 class Layer {
 public:
   Layer();
-  //Layer(const Layer& r);
+  Layer(const Layer& lay);
   virtual ~Layer();
-  virtual Tensor forward(const Tensor& T, bool train) = 0;
-  virtual Tensor backward(const Tensor& gradient) = 0;
+  virtual std::unique_ptr<Layer> clone() = 0;
+  virtual Tensor forward(Tensor& T, bool train) = 0;
+  virtual Tensor backward(Tensor& gradient) = 0;
 
   const float mx = 1.0f, mn = 0.0f;
   virtual void genTensorData() = 0;

@@ -33,10 +33,12 @@ public:
   int fullTurns; //full turn clock
   int maxNodes = 5000000;
 
+  bool fin = false;
+
   zobristKeys* zobStruct; //used to create the key for indexing transpose table
 
   //constructors
-  chessState(std::string iState); //forsyth-edwards based constructor
+  chessState(std::string iState = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"); //forsyth-edwards based constructor
   chessState(const chessState& right); //copy constructor, unimplemented
 
   transpositionTable* tTable; //holds the found transpose tables, indexed using hash key
@@ -54,6 +56,9 @@ public:
   void playerMove(std::string move);
   std::string sPieceAt(int pos);
   std::string getFen();
+  uint16_t fromAlgebraic(std::string move);
+  std::string toAlgebraic(int pos);
+  std::string readMove(uint16_t);
   uint64_t getKey();
 
   void initializeZobristKey(); //generates zobrist key from board state, used only at initialization
@@ -62,10 +67,13 @@ public:
   //additionally handles the XOR operations required to update the zobrist key that indexes the zobrist table
   //operations occur at the same time the actual relevant board update operations occur for the most part
   
+  double winner(); //returns 0 for black win, 1 for white win, 0.5 for draw, and -1 if in progress 
+
   //attacks
   bool isThreatenedBit(int pos); //check for current state
   bool isThreatenedBit(int pos, uint64_t state); //check for different state
   bool isThreatenedBit(int pos, uint64_t state, Color player);
+  
   friend struct zobristKeys;
   friend class Tensorization;
   private:

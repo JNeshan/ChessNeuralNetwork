@@ -10,11 +10,53 @@ inline int position(int rank, int file){
   return rank * 8 + file;
 }
 
-inline std::string toAlgebraic(int pos){
+inline void outBitboard(uint64_t board){
+  std::string output;
+  for(int rank = 7; rank >= 0; --rank){
+    for(int file = 0; file < 8; ++file){
+      int pos = rank * 8 + file;           // pos 63..0 mapping: rank7..rank0
+      output += ( (board >> pos) & 1ULL ) ? "1 " : "0 ";
+    }
+    output += "\n";
+  }
+  std::cout<<output<<std::endl;
+}
+
+std::string chessState::toAlgebraic(int pos){
   return std::string(1, 'a' + pos%8) + std::to_string(1 + pos/8);
 }
 
-inline uint16_t fromAlgebraic(std::string move){
+std::string chessState::readMove(uint16_t pos){
+  int init = pos >> 6 & 0x3f, end = pos & 0x3f;
+  int iRank = pos / 8, iFile = pos % 8, nRank = end / 8, nFile = end % 8;
+
+  char piece = this->pieceAt(init);
+  char cap = this->pieceAt(end);
+  std::string san = "";
+  if(tolower(piece) != 'p'){
+    san += toupper(piece);
+    if(cap == '.' && iFile != nFile){
+      san += std::string("x");
+    }
+  }
+  san += std::string(this->toAlgebraic(init));
+  if(cap != '.' && isupper(cap) == this->active){
+    san += std::string("x");
+  }
+  san += std::string(this->toAlgebraic(end));
+  //1<<13
+  int promotion = pos>>12;
+  switch (promotion){
+    case 0b0001: san += std::string("B");
+    case 0b0010: san += std::string("N");
+    case 0b0100: san += std::string("Q");
+    case 0b1000: san += std::string("R");
+    default: break;
+  }
+  return san;
+}
+
+uint16_t chessState::fromAlgebraic(std::string move){
   char fFile = move[0], fRank = move[1]; //seetup variables for conversion
   char tFile = move[2], tRank = move[3];
   int from = (fRank - '1') * 8 + (fFile - 'a');
@@ -198,8 +240,8 @@ char pieceChars[2][6] = { //printing
 };
 
 std::string sPieceChars[2][6] = {
-  {"♟", "♞", "♝", "♜", "♛", "♚"},
-  {"♙", "♘", "♗", "♖", "♕", "♔"}
+  {"P", "N", "B", "R", "Q", "K"},
+  {"p", "n", "b", "r", "q", "k"}
 };
 
 std::string chessState::sPieceAt(int pos){
@@ -256,7 +298,6 @@ bool chessState::isThreatenedBit(int pos, uint64_t state, Color player){
 }
 
 std::vector<uint16_t> chessState::getAllMovesBit(){
-  std::srand(std::time(0));
   std::vector<uint16_t> moves(0);
   std::vector<uint16_t> store(0);
   //creates move vectors, move logic calls
@@ -271,9 +312,14 @@ std::vector<uint16_t> chessState::getAllMovesBit(){
   store = singleMoves(bitboards[active][KNIGHT], KNIGHT);
   moves.insert(moves.begin(), store.begin(), store.end());
   store = singleMoves(bitboards[active][KING], KING);
-  moves.insert(moves.begin(), store.begin(), store.end());  
-
-  return moves;
+  moves.insert(moves.begin(), store.begin(), store.end());
+  std::vector<uint16_t> legalMoves;
+  for(auto move : moves){
+    if(this->legalMove(move)){
+      legalMoves.push_back(move);
+    }
+  }  
+  return legalMoves;
 }
 
 std::vector<uint16_t> chessState::pawnMoves(uint64_t mappings){
@@ -379,8 +425,10 @@ bool chessState::legalMove(uint16_t move){ //checks if moves are legal, creates 
   int initial = (move >> 6) & 0x3F, destination = move &0x3F;
   uint64_t newState = (((occupied[0] | occupied[1] ) & ~(1ULL << initial)) | (1ULL << destination));
 
+
   int kingPos = __builtin_ctzll(bitboards[active][KING]);
   if(destination == kingPos){
+    output<<initial<<" "<<destination<<std::endl;
     std::cout<<"King capture passed"<<std::endl;
     printBoard();
     throw std::runtime_error("king capture");
@@ -424,14 +472,13 @@ bool chessState::legalMove(uint16_t move){ //checks if moves are legal, creates 
 }
 
 bool chessState::updateBoard(uint16_t move){ //handles toggling the zobrist key
-  
   nodesExplored++;
-
   uint64_t tmpLeft = lMoves >> 16, tmpRight = rMoves >> 16; //update previous moves
   tmpLeft |= (rMoves &0xFFFFULL) << 48;
   tmpRight |= (uint64_t(move) << 48);
   lMoves = tmpLeft; rMoves = tmpRight;
   if((lMoves == rMoves) && lMoves){
+    this->fin = true;
     return true;
   }
 
@@ -530,7 +577,6 @@ bool chessState::updateBoard(uint16_t move){ //handles toggling the zobrist key
         else if(castleState & castleStateChecks[2*active+1] && initial == 1ULL << (56*active)){ //queenside rook moves
           castleState ^= castleStateChecks[2*active+1]; //toggles castle state and zobrist key 
           currentKey ^= zobStruct->castlingRights[1 + (2 * active)];
-
         }
         else if(castleState & castleStateChecks[2*active] && initial == 1ULL << (7 + 56*active)){ //kingside rook moves
           castleState ^= castleStateChecks[2*active]; //toggles castle state and zobrist key 
@@ -568,7 +614,30 @@ bool chessState::updateBoard(uint16_t move){ //handles toggling the zobrist key
           break;
         }
       }
+
+      uint64_t board = 0ULL;
+      for(auto pB: bitboards[!active]){
+        board |= pB;
+      }
+      if(board & ~occupied[!active]){
+        for(int c=0;c<2;c++){
+          uint64_t combined = 0ULL;
+          for(int t=0;t<6;t++) combined |= bitboards[c][t];
+          uint64_t extra = combined & ~occupied[c];
+          uint64_t missing = occupied[c] & ~combined;
+          if(extra || missing){
+            std::cerr<<"Mismatch for color "<<c<<": extra=0x"<<std::hex<<extra<<" missing=0x"<<missing<<std::dec<<"\n";
+            for(int t=0;t<6;t++){
+              uint64_t diff = bitboards[c][t] & ~occupied[c];
+              if(diff) std::cerr<<"  piece "<<t<<" has extra bits: 0x"<<std::hex<<diff<<std::dec<<"\n";
+            }
+          }
+        }
+        throw std::runtime_error("Bitboards and global board mismatch");
+      }
+
       if(halfTurns == 50){
+        this->fin = true;
         return true;
       }
       return false;
@@ -622,6 +691,25 @@ std::pair<PieceType, Color> chessState::pieceAtZob(int pos){
     }
   }
   return std::make_pair(NOPIECE, NOCOLOR);
+}
+
+double chessState::winner(){
+  if(this->fin){
+    return 0.5;
+  }
+  std::vector<uint16_t> mv = this->getAllMovesBit();
+  for(auto& m : mv){
+    if(this->legalMove(m)){
+      return 0;
+    }
+  }
+  int kingPos = __builtin_ctzll(this->bitboards[this->active][KING]);
+  if(this->isThreatenedBit(kingPos)){
+    return -1;
+  }
+  else{
+    return 0.5;
+  }
 }
 
 uint64_t chessState::getKey(){

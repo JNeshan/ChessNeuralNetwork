@@ -21,19 +21,35 @@ ReLULayer::ReLULayer(){
   TryCuda(cudnnCreateTensorDescriptor(&tensorD));
   TryCuda(cudnnCreateActivationDescriptor(&reLU));  
   TryCuda(cudnnSetActivationDescriptor(reLU, CUDNN_ACTIVATION_RELU, CUDNN_PROPAGATE_NAN, 0));
-
-
 }
 
-Tensor ReLULayer::forward(const Tensor& T, bool train){
-  
-  Tensor output(T.dimensions, TensorLocation::GPU, T.n);
+ReLULayer::ReLULayer(const ReLULayer& lay){
+  TryCuda(cudnnCreateTensorDescriptor(&this->tensorD));
+  TryCuda(cudnnCreateActivationDescriptor(&this->reLU));
+  TryCuda(cudnnSetActivationDescriptor(this->reLU, CUDNN_ACTIVATION_RELU, CUDNN_PROPAGATE_NAN, 0));
+}
+
+std::unique_ptr<Layer> ReLULayer::clone(){
+  return(std::make_unique<ReLULayer>(*this));
+}
+
+
+Tensor ReLULayer::forward(Tensor& T, bool train){
+  if(train){
+    this->input = T;
+  }
+  auto start = std::chrono::steady_clock::now();
+
+  auto elapsed = std::chrono::steady_clock::now() - start;
   TryCuda(cudnnSetTensor4dDescriptor(tensorD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, T.size, 1, 1, 1));
-  TryCuda(cudnnActivationForward(nnHandle, reLU, &mx, tensorD, T.gpuData(), &mn, tensorD, output.gpuData()));
-  return output;
+  TryCuda(cudnnActivationForward(nnHandle, reLU, &mx, tensorD, T.gpuData(), &mn, tensorD, T.gpuData()));
+  
+  elapsed = std::chrono::steady_clock::now() - start;
+  ////std::cout<<std::string("Time in relu: ") + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count())<<std::endl;  
+  return T;
 }
 
-Tensor ReLULayer::backward(const Tensor& gradient){
+Tensor ReLULayer::backward(Tensor& gradient){
   Tensor iGrad(input.dimensions, TensorLocation::GPU, input.n);
   TryCuda(cudnnActivationBackward(nnHandle, reLU, &mx, tensorD, gradient.gpuData(), tensorD, gradient.gpuData(), tensorD, input.gpuData(), &mn, tensorD, iGrad.gpuData()));  
   return iGrad;

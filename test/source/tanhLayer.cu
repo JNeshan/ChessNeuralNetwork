@@ -24,19 +24,32 @@ tanhLayer::tanhLayer(){
   TryCuda(cudnnSetActivationDescriptor(actD, CUDNN_ACTIVATION_TANH, CUDNN_NOT_PROPAGATE_NAN, 0.0f));
 }
 
+tanhLayer::tanhLayer(const tanhLayer& lay){
+  TryCuda(cudnnCreateTensorDescriptor(&this->tensorD));
+  TryCuda(cudnnCreateActivationDescriptor(&this->actD));
+  TryCuda(cudnnSetActivationDescriptor(this->actD, CUDNN_ACTIVATION_TANH, CUDNN_NOT_PROPAGATE_NAN, 0.0f));
+}
+
+std::unique_ptr<Layer> tanhLayer::clone(){
+  return(std::make_unique<tanhLayer>(*this));
+}
+
 tanhLayer::~tanhLayer(){
   TryCuda(cudnnDestroyTensorDescriptor(tensorD));
   TryCuda(cudnnDestroyActivationDescriptor(actD));
 }
 
-Tensor tanhLayer::forward(const Tensor& T, bool train){
-  Tensor output(T.dimensions, TensorLocation::GPU, T.n);
+Tensor tanhLayer::forward(Tensor& T, bool train){
+  
   TryCuda(cudnnSetTensor4dDescriptor(tensorD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, T.size, 1, 1, 1));
-  TryCuda(cudnnActivationForward(nnHandle, actD, &mx, tensorD, T.gpuData(), &mn, tensorD, output.gpuData()));
-  return output;
+  TryCuda(cudnnActivationForward(nnHandle, actD, &mx, tensorD, T.gpuData(), &mn, tensorD, T.gpuData()));
+  if(train){
+    this->output = T;
+  }
+  return std::move(T);
 }
 
-Tensor tanhLayer::backward(const Tensor& gradient){
+Tensor tanhLayer::backward(Tensor& gradient){
   Tensor iGrad(output.dimensions, TensorLocation::GPU, output.n);
   TryCuda(cudnnActivationBackward(nnHandle, actD, &mx, tensorD, output.gpuData(), tensorD, 
                                   gradient.gpuData(), tensorD, output.gpuData(), &mn, tensorD, iGrad.gpuData()));

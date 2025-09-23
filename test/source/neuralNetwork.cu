@@ -21,7 +21,7 @@ Request::Request(chessState& state){
 }
 
 
-NeuralNetwork::NeuralNetwork(std::vector<std::unique_ptr<Layer>>& b, std::vector<std::unique_ptr<Layer>>& pH, std::vector<std::unique_ptr<Layer>>& vH) : optimize(1), batchSize(2048){
+NeuralNetwork::NeuralNetwork(std::vector<std::unique_ptr<Layer>>& b, std::vector<std::unique_ptr<Layer>>& pH, std::vector<std::unique_ptr<Layer>>& vH) : optimize(1), batchSize(4096){
   int i = 0;
   
   for(auto& ptr : b){

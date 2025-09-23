@@ -97,7 +97,7 @@ void ChessAI::train(){
   threshold = 200;
   trainingStages = 1;
   trainingSize = 1;
-  threads = 32;
+  threads = 30;
   updCnt = 2000;
 
   while(true){

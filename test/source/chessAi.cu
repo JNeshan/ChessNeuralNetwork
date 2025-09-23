@@ -16,7 +16,7 @@ void DataCollection::add(std::vector<Tensor>& i, std::vector<Tensor>& p, std::ve
 std::tuple<Tensor, Tensor, Tensor> DataCollection::sample(){
   std::vector<Tensor*> inp, pol, val;
   Tensor inpT, polT, valT;
-  int sampleSize = 2048;
+  int sampleSize = 1024;
   inp.reserve(sampleSize); pol.reserve(sampleSize); val.reserve(sampleSize);
   std::lock_guard<std::mutex> lock(this->gDataMutex);
   std::srand(time(0));

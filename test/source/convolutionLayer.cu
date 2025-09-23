@@ -135,7 +135,7 @@ Tensor ConvolutionLayer::forward(Tensor& T, bool train){
 
 Tensor ConvolutionLayer::backward(Tensor& gradient){
   auto start = std::chrono::steady_clock::now();
-  Tensor iGrad = Tensor(this->input.dimensions, TensorLocation::GPU);
+  //Tensor iGrad = Tensor(this->input.dimensions, TensorLocation::GPU);
   
   //initializing gradient tensors and descriptor parameters
   
@@ -148,7 +148,6 @@ Tensor ConvolutionLayer::backward(Tensor& gradient){
     size_t wsSizeX = 0, wsSizeY;
     cudnnConvolutionBwdFilterAlgoPerf_t potential;
     cudnnConvolutionBwdDataAlgoPerf_t dataPot;
-    TryCuda(cudnnConvolutionBackwardBias(this->nnHandle, &mx, this->outputD, gradient.gpuData(), &mn, this->biasD, this->bGrad.gpuData()));
     TryCuda(cudnnFindConvolutionBackwardDataAlgorithm(this->nnHandle, this->filterD, this->outputD, this->convoD, this->inputD, 1, &algoCount, &dataPot));
     TryCuda(cudnnFindConvolutionBackwardFilterAlgorithm(this->nnHandle, this->inputD, this->outputD, this->convoD, this->filterD, 1, &algoCount, &potential));
     this->backDataAlgo = dataPot.algo;
@@ -163,6 +162,7 @@ Tensor ConvolutionLayer::backward(Tensor& gradient){
     }
     this->back = true;
   }
+  TryCuda(cudnnConvolutionBackwardBias(this->nnHandle, &mx, this->outputD, gradient.gpuData(), &mn, this->biasD, this->bGrad.gpuData()));
 
   TryCuda(cudnnConvolutionBackwardFilter(this->nnHandle, &mx, this->inputD, this->input.gpuData(), this->outputD, gradient.gpuData(), 
                                         this->convoD, this->backFilterAlgo, this->wsPtrB, this->wsSizeB, &mn, this->filterD, fGrad.gpuData()));
@@ -174,11 +174,11 @@ Tensor ConvolutionLayer::backward(Tensor& gradient){
   //TryCuda(cudnnConvolutionBackwardData(nnHandle, &mx, filterD, filters.gpuData(), outputD, 
   //                                    gradient.gpuData(), convoD, dataAlgo, workspace, wsSize, &mn, 
   //                                    inputD, iGrad.gpuData()));
-  
+  TryCuda(cudaDeviceSynchronize);
   auto elapsed = std::chrono::steady_clock::now() - start;
-  //::cout<<std::string("Time in convolution back: ") + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count())<<std::endl;  
+  std::cout<<std::string("Time in convolution back: ") + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count())<<std::endl;  
   
-  return std::move(input);
+  return std::move(this->input);
 }
 
 void ConvolutionLayer::genTensorData(){

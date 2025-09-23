@@ -110,7 +110,7 @@ void NeuralNetwork::backPropagate(Tensor& v, Tensor& p){
     std::cout<<i<<std::endl;
     V = body[i]->backward(V);
     auto elapsed = std::chrono::steady_clock::now() - start;
-    std::cout<<std::string("Time in convolution back: ") + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count())<<std::endl;  
+    //std::cout<<std::string("Time in convolution back: ") + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count())<<std::endl;  
   }
 
   

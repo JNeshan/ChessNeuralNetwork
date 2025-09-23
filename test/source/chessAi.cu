@@ -104,7 +104,7 @@ void ChessAI::train(){
     trainingThread = std::thread([net, &lMainNetMutex, &gameCollection, &run, &dataReady, &refresh]{
       std::srand(std::time(0));
       while(!dataReady && run){
-        ThreadControl::cout(std::to_string(refresh));
+        //ThreadControl::cout(std::to_string(refresh));
         std::this_thread::sleep_for(std::chrono::seconds(5));
       }
       std::cout<<"Training thread started"<<std::endl;

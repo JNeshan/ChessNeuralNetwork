@@ -220,7 +220,7 @@ void NeuralNetwork::evaluationLoop(){
   this->run = true;
   const auto batchTime = std::chrono::milliseconds(10);
   
-  std::cout<<"In"<<std::endl;
+  //std::cout<<"In"<<std::endl;
 
   while(this->run){
     std::vector<std::unique_ptr<Request>> requestBatch;
@@ -246,11 +246,11 @@ void NeuralNetwork::evaluationLoop(){
       
       cudaDeviceSynchronize;
       elapsed = std::chrono::steady_clock::now() - start;
-      ThreadControl::cout(std::string("Time to batch: ") + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()));
+      //ThreadControl::cout(std::string("Time to batch: ") + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()));
 
       this->batchEvaluate(requestBatch, inputBatch); //sends the batch to be evaluated, fulfills promises
       
-      ThreadControl::cout(std::to_string(tensorBatch.size()));
+      //ThreadControl::cout(std::to_string(tensorBatch.size()));
       run = false;
     }
     else{

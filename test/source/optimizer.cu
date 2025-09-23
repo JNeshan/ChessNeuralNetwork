@@ -36,7 +36,7 @@ void Optimizer::optimize(const Tensor& in, const Tensor& grad){
 
 void Optimizer::batchOptimize(std::pair<std::vector<Tensor*>, std::vector<Tensor*>>& trainingBatch){
   auto [Main, Grad] = trainingBatch;
-  std::cout<<Main.size()<<std::endl;
+  //std::cout<<Main.size()<<std::endl;
   for(int i = 0; i < Main.size(); i++){
     Tensor* in = trainingBatch.first[i], *grad = trainingBatch.second[i];
     const int thCount = 256, m = ((in->size + thCount - 1) / thCount); //number of threads per thread block, number of blocks in 1d grid
@@ -44,5 +44,5 @@ void Optimizer::batchOptimize(std::pair<std::vector<Tensor*>, std::vector<Tensor
     dim3 gridDim(m);
     GradDescentKernel<<<gridDim, blockDim>>>(in->gpuData(), grad->gpuData(), lR, in->size);
   }
-  std::cout<<"fin"<<std::endl;
+  //std::cout<<"fin"<<std::endl;
 }

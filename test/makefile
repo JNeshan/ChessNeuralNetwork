@@ -22,12 +22,12 @@ debug: main
 
 
 main : main.o $(CHESSOBJ) $(CUOBJ)
-	g++ $(CXXFLAGS) -o $@ main.o $(CHESSOBJ) $(CUOBJ) $(LIBS)
+	nvcc $(NVCCFLAGS) -o $@ main.o $(CHESSOBJ) $(CUOBJ) $(LIBS)
 	./clrChess.sh
 	./main
 
 main.o : main.cpp
-	g++ $(CXXFLAGS) -c $< -o $@
+	nvcc $(NVCCFLAGS) -c $< -o $@
 
 %.o : $(SRCDIR)/%.cu
 	nvcc $(NVCCFLAGS) $(INCLUDES) -c $< -o $@

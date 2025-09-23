@@ -3,8 +3,6 @@
 
 DataCollection::DataCollection(size_t size) : capacity(size){}
 
-
-
 void DataCollection::add(std::vector<Tensor>& i, std::vector<Tensor>& p, std::vector<Tensor>& v){
   std::lock_guard<std::mutex> lock(this->gDataMutex);
   for(int j = 0; j < i.size(); j++){
@@ -44,7 +42,6 @@ ChessAI::ChessAI(){
   tmpBody.push_back(std::make_unique<ConvolutionLayer>(ConvolutionLayer(256, 17, 3, 3, 1)));
   tmpBody.push_back(std::make_unique<NormalizationLayer>(NormalizationLayer(true, 256)));
   tmpBody.push_back(std::make_unique<ReLULayer>());
-  
 
   for(int i = 0; i < 20; i++){
     tmpBody.push_back(std::make_unique<ResidualBlock>());
@@ -104,7 +101,6 @@ void ChessAI::train(){
   updCnt = 500;
 
   while(true){
-
     trainingThread = std::thread([net, &lMainNetMutex, &gameCollection, &run, &dataReady, &refresh]{
       std::srand(std::time(0));
       while(!dataReady && run){
@@ -132,7 +128,7 @@ void ChessAI::train(){
     //  }
     //  ThreadControl::cout(std::string("Observer thread terminating"));
     //});
-
+    
     for(int i = 0; i < threads; i++){
       generatorThreads.emplace_back([&evalNetPtr, &lEvalNetMutex, &gameCollection, &active, &run, &evalWaiting, &lGenMutex, &fens, &refresh, threshold, &dataReady]{
         auto threadId = std::this_thread::get_id();

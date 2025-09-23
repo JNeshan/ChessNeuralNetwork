@@ -424,7 +424,10 @@ bool chessState::castlingCheck(int pos, bool side){
 bool chessState::legalMove(uint16_t move){ //checks if moves are legal, creates temporary state values without mutating members
   int initial = (move >> 6) & 0x3F, destination = move &0x3F;
   uint64_t newState = (((occupied[0] | occupied[1] ) & ~(1ULL << initial)) | (1ULL << destination));
-
+  uint64_t nPos = 1ULL << destination;
+  if(this->occupied[active] & nPos){
+    return false;
+  }
 
   int kingPos = __builtin_ctzll(bitboards[active][KING]);
   if(destination == kingPos){
@@ -441,7 +444,9 @@ bool chessState::legalMove(uint16_t move){ //checks if moves are legal, creates 
         return false;
       }
       else{
-        return true;
+        uint64_t occ = 1ULL << initial + 2;
+        occ |= 1ULL << initial + 1;
+        return !(occ & (occupied[!active] | occupied[active]));
       }
     }
     else if(destination - initial == -2){
@@ -449,7 +454,11 @@ bool chessState::legalMove(uint16_t move){ //checks if moves are legal, creates 
         return false;
       }
       else{
-        return true;
+        
+        uint64_t occ = 1ULL << initial - 2;
+        occ |= 1ULL << initial - 1;
+        occ |= 1ULL << initial - 3;
+        return !(occ & (occupied[!active] | occupied[active]));
       }
     }
     int kingPos = __builtin_ctzll(bitboards[active][KING]);
@@ -652,7 +661,7 @@ bool chessState::updateBoard(uint16_t move){ //handles toggling the zobrist key
         uint64_t initial = 1ULL << ((move >> 6) & 0x3F), final = 1ULL << (move & 0x3F); //unpacks move to bitboard
         int nPos = move & 0x3F, iPos = (move >> 6) & 0x3F; //values for updating zobrist key
   
-        std::cout<<"BITBOARD MISMATCH2\nBITBOARDMISMATCH2\nBITBOARDMISMATCH2"<<active<<" "<<iPos<<" "<<nPos<<std::endl;
+        std::cout<<"BITBOARD MISMATCH2\nBITBOARDMISMATCH2\nBITBOARDMISMATCH"<<active<<" "<<iPos<<" "<<nPos<<std::endl;
         for(int c=0;c<2;c++){
           uint64_t combined = 0ULL;
           for(int t=0;t<6;t++) combined |= bitboards[c][t];

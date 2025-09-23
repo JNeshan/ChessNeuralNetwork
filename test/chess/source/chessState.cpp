@@ -643,6 +643,32 @@ bool chessState::updateBoard(uint16_t move){ //handles toggling the zobrist key
         throw std::runtime_error("Bitboards and global board mismatch");
       }
 
+
+      board = 0ULL;
+      for(auto pB: bitboards[active]){
+        board |= pB;
+      }
+      if(board & ~occupied[active]){
+        uint64_t initial = 1ULL << ((move >> 6) & 0x3F), final = 1ULL << (move & 0x3F); //unpacks move to bitboard
+        int nPos = move & 0x3F, iPos = (move >> 6) & 0x3F; //values for updating zobrist key
+  
+        std::cout<<"BITBOARD MISMATCH2\nBITBOARDMISMATCH2\nBITBOARDMISMATCH2"<<active<<" "<<iPos<<" "<<nPos<<std::endl;
+        for(int c=0;c<2;c++){
+          uint64_t combined = 0ULL;
+          for(int t=0;t<6;t++) combined |= bitboards[c][t];
+          uint64_t extra = combined & ~occupied[c];
+          uint64_t missing = occupied[c] & ~combined;
+          if(extra || missing){
+            std::cerr<<"Mismatch for color "<<c<<": extra=0x"<<std::hex<<extra<<" missing=0x"<<missing<<std::dec<<"\n";
+            for(int t=0;t<6;t++){
+              uint64_t diff = bitboards[c][t] & ~occupied[c];
+              if(diff) std::cerr<<"  piece "<<t<<" has extra bits: 0x"<<std::hex<<diff<<std::dec<<"\n";
+            }
+          }
+        }
+        throw std::runtime_error("Bitboards and global board mismatch");
+      }
+
       if(halfTurns == 50){
         this->fin = true;
         return true;

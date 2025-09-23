@@ -94,7 +94,7 @@ void ChessAI::train(){
   }
   iF.close();
   
-  threshold = 400;
+  threshold = 200;
   trainingStages = 1;
   trainingSize = 1;
   threads = 32;

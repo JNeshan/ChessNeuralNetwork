@@ -50,9 +50,9 @@ Tensor ReLULayer::forward(Tensor& T, bool train){
 }
 
 Tensor ReLULayer::backward(Tensor& gradient){
-  Tensor iGrad(input.dimensions, TensorLocation::GPU, input.n);
-  TryCuda(cudnnActivationBackward(nnHandle, reLU, &mx, tensorD, gradient.gpuData(), tensorD, gradient.gpuData(), tensorD, input.gpuData(), &mn, tensorD, iGrad.gpuData()));  
-  return iGrad;
+  //Tensor iGrad(input.dimensions, TensorLocation::GPU, input.n);
+  TryCuda(cudnnActivationBackward(nnHandle, reLU, &mx, tensorD, gradient.gpuData(), tensorD, gradient.gpuData(), tensorD, input.gpuData(), &mn, tensorD, gradient.gpuData()));  
+  return std::move(gradient);
 }
 
 void ReLULayer::saveTensor(std::ofstream& oF){

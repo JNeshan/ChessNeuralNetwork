@@ -620,6 +620,8 @@ bool chessState::updateBoard(uint16_t move){ //handles toggling the zobrist key
         board |= pB;
       }
       if(board & ~occupied[!active]){
+        std::cout<<"BITBOARD MISMATCH\nBITBOARDMISMATCH\nBITBOARDMISMATCH"<<std::endl;
+
         for(int c=0;c<2;c++){
           uint64_t combined = 0ULL;
           for(int t=0;t<6;t++) combined |= bitboards[c][t];

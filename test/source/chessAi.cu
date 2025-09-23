@@ -16,7 +16,7 @@ void DataCollection::add(std::vector<Tensor>& i, std::vector<Tensor>& p, std::ve
 std::tuple<Tensor, Tensor, Tensor> DataCollection::sample(){
   std::vector<Tensor*> inp, pol, val;
   Tensor inpT, polT, valT;
-  int sampleSize = 512;
+  int sampleSize = 2048;
   inp.reserve(sampleSize); pol.reserve(sampleSize); val.reserve(sampleSize);
   std::lock_guard<std::mutex> lock(this->gDataMutex);
   std::srand(time(0));
@@ -70,7 +70,7 @@ ChessAI::~ChessAI(){
 }
 
 void ChessAI::train(){
-  DataCollection gameCollection(10000);
+  DataCollection gameCollection(50000);
   NeuralNetwork* net = this->network.get();
   std::unique_ptr<NeuralNetwork> evalNetPtr(std::make_unique<NeuralNetwork>(*net));
   std::atomic<int> refresh = 0; //tracking number of tensors trained since evaluation network was updated
@@ -94,11 +94,11 @@ void ChessAI::train(){
   }
   iF.close();
   
-  threshold = 200;
+  threshold = 400;
   trainingStages = 1;
   trainingSize = 1;
-  threads = 16;
-  updCnt = 500;
+  threads = 32;
+  updCnt = 2000;
 
   while(true){
     trainingThread = std::thread([net, &lMainNetMutex, &gameCollection, &run, &dataReady, &refresh]{

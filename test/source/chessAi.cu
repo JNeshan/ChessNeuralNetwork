@@ -148,7 +148,7 @@ void ChessAI::train(){
           game.runGame(randFen, evalWaiting, genLock, lEvalNetMutex);
           gameCollection.add(game.input, game.policy, game.value);
           refresh += game.input.size();
-          if(refresh > 1000){
+          if(refresh > 512){
             dataReady = true;
           }
         }

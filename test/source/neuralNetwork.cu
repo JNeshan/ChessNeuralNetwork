@@ -227,7 +227,7 @@ void NeuralNetwork::evaluationLoop(){
     std::vector<Tensor*> tensorBatch;
     start = std::chrono::steady_clock::now();
     while(elapsed < batchTime && requestBatch.size() < this->batchSize){ //waits for a certain amount of inputs or a max time before batching them for evaluation
-      std::lock_guard<std::mutex> lock(this->gQueueMutex); //blocks until it can lock the queue, adds the first entry, then unlocks it
+      std::unique_lock<std::mutex> lock(this->gQueueMutex); //blocks until it can lock the queue, adds the first entry, then unlocks it
       if(!this->queue.empty()){
         requestBatch.push_back(nullptr);
         requestBatch[requestBatch.size()-1].swap(this->queue.front());
@@ -262,7 +262,7 @@ void NeuralNetwork::evaluationLoop(){
 
 void NeuralNetwork::evaluationRequest(std::unique_ptr<Request>& req){
   Request* r = req.get();
-  std::lock_guard<std::mutex> lock(this->gQueueMutex);
+  std::unique_lock<std::mutex> lock(this->gQueueMutex);
   this->queue.push(nullptr);
   this->queue.back().swap(req);
 }

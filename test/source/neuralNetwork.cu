@@ -84,40 +84,42 @@ std::pair<Tensor, Tensor> NeuralNetwork::evaluate(const Tensor& inp, bool train)
   for(int i = 0; i < value.size(); i++){
     V = value[i]->forward(V, train);
   }
-  std::cout<<V.n<<" "<<P.n<<std::endl;
+  //std::cout<<V.n<<" "<<P.n<<std::endl;
   return std::make_pair(V, P);
 }
 
 void NeuralNetwork::backPropagate(Tensor& v, Tensor& p){
-  std::cout<<"Backpropagation started"<<std::endl;
+  //std::cout<<"Backpropagation started"<<std::endl;
   Tensor V = value[value.size()-1]->backward(v);
   Tensor P = policy[policy.size()-1]->backward(p);
   for(int i = value.size()-2; i >= 0; i--){
     V = value[i]->backward(V);
   }
-  std::cout<<"Value done"<<std::endl;
+  //std::cout<<"Value done"<<std::endl;
   for(int i = policy.size()-2; i >= 0; i--){
     P = policy[i]->backward(P);
   }
   if(V.size != P.size){
     throw std::runtime_error("Value and policy backpropagation outputs wrong");
   }
-  std::cout<<"Policy Done"<<std::endl;
+  //std::cout<<"Policy Done"<<std::endl;
   V.gpuAdd(P);
   
   for(int i = body.size()-1; i >= 0; i--){
     auto start = std::chrono::steady_clock::now();
-    std::cout<<i<<std::endl;
+    //std::cout<<i<<std::endl;
     V = body[i]->backward(V);
     auto elapsed = std::chrono::steady_clock::now() - start;
-    //std::cout<<std::string("Time in convolution back: ") + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count())<<std::endl;  
+    std::cout<<std::string("Time in body layer back: ") + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count())<<std::endl;  
   }
 
   
-  std::cout<<"Backpropagation ended"<<std::endl;
+  //std::cout<<"Backpropagation ended"<<std::endl;
 }
 
 void NeuralNetwork::train(const Tensor& inp, const Tensor& correctValue, const Tensor& correctPolicy, const int lR){
+  auto start = std::chrono::steady_clock::now();
+    
   auto [evalValue, evalPolicy] = this->evaluate(inp, true); //runs the input through the neural network to get its predictions
   optimize.setRate(lR); //sets optimzier leraning rate
   
@@ -153,6 +155,9 @@ void NeuralNetwork::train(const Tensor& inp, const Tensor& correctValue, const T
   }
   optimize.batchOptimize(trainTensors);
   ThreadControl::cout(std::string("Optimized"));
+  auto elapsed = std::chrono::steady_clock::now() - start;
+  std::cout<<std::string("Time in back flow: ") + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count())<<std::endl;  
+
 
 }
 //this evaulate is currently designed so that its only used by the class so inp can be moved and destroyed

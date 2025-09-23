@@ -599,6 +599,9 @@ bool chessState::updateBoard(uint16_t move){ //handles toggling the zobrist key
       active = static_cast<Color>(!active); //changes player
       for(auto e: allPieces){
         if((final & bitboards[active][e])){ //checks if one of piece type is on the moved to space
+          if(e == KING){
+            std::cout<<"big uhoh"<<std::endl;
+          }
           currentKey ^= zobStruct->pieceSquare[e + (6 * active)][nPos];
           bitboards[active][e] &= ~occupied[static_cast<Color>(!active)]; //removes captured piece from piece type, ensures no overlaps
           if(e == ROOK){ //edge case incase an unmoved rook is captured with its castle available
@@ -620,8 +623,7 @@ bool chessState::updateBoard(uint16_t move){ //handles toggling the zobrist key
         board |= pB;
       }
       if(board & ~occupied[!active]){
-        std::cout<<"BITBOARD MISMATCH\nBITBOARDMISMATCH\nBITBOARDMISMATCH"<<std::endl;
-
+        std::cout<<"BITBOARD MISMATCH\nBITBOARDMISMATCH\nBITBOARDMISMATCH"<<active<<std::endl;
         for(int c=0;c<2;c++){
           uint64_t combined = 0ULL;
           for(int t=0;t<6;t++) combined |= bitboards[c][t];

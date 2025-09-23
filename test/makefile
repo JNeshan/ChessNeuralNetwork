@@ -23,7 +23,7 @@ debug: main
 
 
 main : main.o $(CHESSOBJ) $(CUOBJ)
-	g++ $(CXXFLAGS) $(CUDA_INC) -o $@ main.o $(CHESSOBJ) $(CUOBJ) $(LIBS)
+	nvcc $(NVCCFLAGS) $(CUDA_INC) -o $@ main.o $(CHESSOBJ) $(CUOBJ) $(LIBS)
 	./clrChess.sh
 	./main
 

@@ -172,6 +172,7 @@ void ChessAI::train(){
         evalNetPtr.reset();
         evalNetPtr = std::make_unique<NeuralNetwork>(*net);
         refresh = 0;
+        evalWaiting = false;
       }
       
       auto* evalNetwork = evalNetPtr.get();

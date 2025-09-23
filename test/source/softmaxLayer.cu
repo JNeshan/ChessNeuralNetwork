@@ -56,7 +56,7 @@ Tensor SoftmaxLayer::backward(Tensor& gradient){
   Tensor iGrad(output.dimensions, TensorLocation::GPU, output.n);
   TryCuda(cudnnSoftmaxBackward(nnHandle, CUDNN_SOFTMAX_FAST, CUDNN_SOFTMAX_MODE_INSTANCE, &mx, tensorD, 
                               output.gpuData(), tensorD, gradient.gpuData(), &mn, tensorD, iGrad.gpuData()));
-  return iGrad;
+  return std::move(iGrad);
 }
 
 void SoftmaxLayer::saveTensor(std::ofstream& oF){

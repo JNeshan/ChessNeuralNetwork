@@ -21,7 +21,7 @@ Request::Request(chessState& state){
 }
 
 
-NeuralNetwork::NeuralNetwork(std::vector<std::unique_ptr<Layer>>& b, std::vector<std::unique_ptr<Layer>>& pH, std::vector<std::unique_ptr<Layer>>& vH) : optimize(1), batchSize(1024){
+NeuralNetwork::NeuralNetwork(std::vector<std::unique_ptr<Layer>>& b, std::vector<std::unique_ptr<Layer>>& pH, std::vector<std::unique_ptr<Layer>>& vH) : optimize(1), batchSize(2048){
   int i = 0;
   
   for(auto& ptr : b){
@@ -89,7 +89,7 @@ std::pair<Tensor, Tensor> NeuralNetwork::evaluate(const Tensor& inp, bool train)
 }
 
 void NeuralNetwork::backPropagate(Tensor& v, Tensor& p){
-  //std::cout<<"Backpropagation started"<<std::endl;
+  std::cout<<"Backpropagation started"<<std::endl;
   Tensor V = value[value.size()-1]->backward(v);
   Tensor P = policy[policy.size()-1]->backward(p);
   for(int i = value.size()-2; i >= 0; i--){

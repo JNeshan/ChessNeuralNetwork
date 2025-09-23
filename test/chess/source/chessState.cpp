@@ -519,22 +519,22 @@ bool chessState::updateBoard(uint16_t move){ //handles toggling the zobrist key
       switch (move >> 12 & 0xF) //promotion flags, preemptively removes old pawn position then sets p to new piece for updates
       {
       case 0b0001:{
-        bitboards[active][p] ^= initial;
+        bitboards[active][p] &= ~initial;
         p = BISHOP;
         break;
       }
       case 0b0010:{
-        bitboards[active][p] ^= initial;
+        bitboards[active][p] &= ~initial;
         p = KNIGHT;
         break;
       }
       case 0b0100:{
-        bitboards[active][p] ^= initial;
+        bitboards[active][p] &= ~initial;
         p = QUEEN;
         break;
       }
       case 0b1000:{
-        bitboards[active][p] ^= initial;
+        bitboards[active][p] &= ~initial;
         p = ROOK;
         break;
       }
@@ -583,16 +583,16 @@ bool chessState::updateBoard(uint16_t move){ //handles toggling the zobrist key
           currentKey ^= zobStruct->castlingRights[2 * active];
         }
         
-        bitboards[active][p] ^= initial; //removes old position
+        bitboards[active][p] &= ~initial; //removes old position
         break;
       }
       }
 
 
       currentKey ^= zobStruct->pieceSquare[p + (6 * active)][nPos]; //toggles new piece position
-      bitboards[active][p] |= 1ULL << (move & 0x3F);
-      occupied[active] ^= initial; //removes old position from full board
-      occupied[active] |= 1ULL << (move & 0x3F); //adds new position to players full board
+      bitboards[active][p] |= final;
+      occupied[active] &= ~initial; //removes old position from full board
+      occupied[active] |= final; //adds new position to players full board
 
       occupied[static_cast<Color>(!active)] &= ~occupied[active]; //removes captured piece from full board
       fullTurns += active; //increments on black move
@@ -623,7 +623,10 @@ bool chessState::updateBoard(uint16_t move){ //handles toggling the zobrist key
         board |= pB;
       }
       if(board & ~occupied[!active]){
-        std::cout<<"BITBOARD MISMATCH\nBITBOARDMISMATCH\nBITBOARDMISMATCH"<<active<<std::endl;
+        uint64_t initial = 1ULL << ((move >> 6) & 0x3F), final = 1ULL << (move & 0x3F); //unpacks move to bitboard
+        int nPos = move & 0x3F, iPos = (move >> 6) & 0x3F; //values for updating zobrist key
+  
+        std::cout<<"BITBOARD MISMATCH\nBITBOARDMISMATCH\nBITBOARDMISMATCH"<<active<<" "<<iPos<<" "<<nPos<<std::endl;
         for(int c=0;c<2;c++){
           uint64_t combined = 0ULL;
           for(int t=0;t<6;t++) combined |= bitboards[c][t];

@@ -10,6 +10,7 @@ CHESSOBJ = $(notdir $(CHESSSRC:.cpp=.o))
 CUSRC = $(wildcard $(SRCDIR)/*.cu)
 CUOBJ = $(notdir $(CUSRC:.cu=.o))
 INCLUDES = -I$(HDRDIR) -I$(CHESSHDIR)
+CUDA_INC = -I/usr/local/cuda-12.9/include/
 
 
 .PHONY : program clean
@@ -22,12 +23,12 @@ debug: main
 
 
 main : main.o $(CHESSOBJ) $(CUOBJ)
-	nvcc $(NVCCFLAGS) -o $@ main.o $(CHESSOBJ) $(CUOBJ) $(LIBS)
+	g++ $(CXXFLAGS) $(CUDA_INC) -o $@ main.o $(CHESSOBJ) $(CUOBJ) $(LIBS)
 	./clrChess.sh
 	./main
 
 main.o : main.cpp
-	nvcc $(NVCCFLAGS) -c $< -o $@
+	g++ $(CXXFLAGS) $(CUDA_INC) $ -c $< -o $@
 
 %.o : $(SRCDIR)/%.cu
 	nvcc $(NVCCFLAGS) $(INCLUDES) -c $< -o $@

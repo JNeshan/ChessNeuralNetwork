@@ -21,7 +21,7 @@ Request::Request(chessState& state){
 }
 
 
-NeuralNetwork::NeuralNetwork(std::vector<std::unique_ptr<Layer>>& b, std::vector<std::unique_ptr<Layer>>& pH, std::vector<std::unique_ptr<Layer>>& vH) : optimize(1), batchSize(4096){
+NeuralNetwork::NeuralNetwork(std::vector<std::unique_ptr<Layer>>& b, std::vector<std::unique_ptr<Layer>>& pH, std::vector<std::unique_ptr<Layer>>& vH) : optimize(1), batchSize(2048){
   int i = 0;
   
   for(auto& ptr : b){
@@ -245,11 +245,13 @@ void NeuralNetwork::evaluationLoop(){
       inputBatch.batchBuild(tensorBatch, TensorLocation::GPU);
       
       cudaDeviceSynchronize;
-      elapsed = std::chrono::steady_clock::now() - start;
       //ThreadControl::cout(std::string("Time to batch: ") + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()));
 
       this->batchEvaluate(requestBatch, inputBatch); //sends the batch to be evaluated, fulfills promises
-      
+      elapsed = std::chrono::steady_clock::now() - start;
+
+      ThreadControl::cout(std::string("Time to evaluate: ") + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()));
+
       //ThreadControl::cout(std::to_string(tensorBatch.size()));
       run = false;
     }

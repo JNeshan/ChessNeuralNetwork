@@ -50,11 +50,11 @@ Tensor tanhLayer::forward(Tensor& T, bool train){
 }
 
 Tensor tanhLayer::backward(Tensor& gradient){
-  Tensor iGrad(output.dimensions, TensorLocation::GPU, output.n);
+  //Tensor iGrad(output.dimensions, TensorLocation::GPU, output.n);
   TryCuda(cudnnActivationBackward(nnHandle, actD, &mx, tensorD, output.gpuData(), tensorD, 
-                                  gradient.gpuData(), tensorD, output.gpuData(), &mn, tensorD, iGrad.gpuData()));
+                                  gradient.gpuData(), tensorD, output.gpuData(), &mn, tensorD, gradient.gpuData()));
 
-  return iGrad; 
+  return gradient; 
 }
 
 void tanhLayer::saveTensor(std::ofstream& oF){

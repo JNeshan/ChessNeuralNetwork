@@ -174,9 +174,8 @@ Tensor ConvolutionLayer::backward(Tensor& gradient){
   //TryCuda(cudnnConvolutionBackwardData(nnHandle, &mx, filterD, filters.gpuData(), outputD, 
   //                                    gradient.gpuData(), convoD, dataAlgo, workspace, wsSize, &mn, 
   //                                    inputD, iGrad.gpuData()));
-  TryCuda(cudaDeviceSynchronize);
   auto elapsed = std::chrono::steady_clock::now() - start;
-  std::cout<<std::string("Time in convolution back: ") + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count())<<std::endl;  
+  //std::cout<<std::string("Time in convolution back: ") + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count())<<std::endl;  
   
   return std::move(this->input);
 }

@@ -1,14 +1,3 @@
-//tensor.h
-#ifndef TENSOR_H
-#define TENSOR_H
-
-#include <vector>
-#include <stdexcept>
-#include <iostream>
-#include <fstream>
-#include <cuda_fp16.h>
-
-enum class TensorLocation {CPU, GPU};
 //The tensor class wraps a pointer to a contiguous array with data to represent it as an n-dimensional matrix, along with
 //handling the allocation, destruction, and transfer of memory in the CPU and GPU
 //The dimensions and overall size are necessary to perform the Cuda computations, and the dimension count n is needed to
@@ -27,6 +16,19 @@ enum class TensorLocation {CPU, GPU};
 //specifically made to change the structure of layers and maintain the old layers data.
 //The main draw from this is that writing and reading must be performed very carefully.
 //
+
+//tensor.h
+#ifndef TENSOR_H
+#define TENSOR_H
+
+#include <vector>
+#include <stdexcept>
+#include <iostream>
+#include <fstream>
+#include <cuda_fp16.h>
+
+enum class TensorLocation {CPU, GPU};
+
 //
 
 class Tensor {

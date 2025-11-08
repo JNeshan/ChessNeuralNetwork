@@ -2,12 +2,11 @@
 #define TENSORIZATION_H
 
 #include "../chess/header/chessState.h"
-#include "tensor.h"
-
+#include "tensor.cuh"
 class Tensorization{
 public:
   Tensorization();
-  static Tensor tensorize(const chessState& state);
+  static Tensor<float> tensorize(const chessState& state);
 
 private:
 

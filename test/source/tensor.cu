@@ -1,3 +1,4 @@
+//tensor.cu
 #include <stdexcept>
 #include <vector>
 #include "../header/tensor.h"

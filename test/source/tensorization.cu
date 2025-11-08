@@ -9,38 +9,35 @@ En Passant
 */
 Tensorization::Tensorization(){}
 
+
+
 Tensor Tensorization::tensorize(const chessState& state){
-  Tensor T({1, 17, 8, 8}, TensorLocation::CPU);
+  Tensor T({1, 8, 8, 17}, TensorLocation::CPU); //NHWC format
   float* data = T.cpuData();
-  int p = 0;
   std::array<uint64_t, 6> whiteBitboard = state.bitboards[0], blackBitboard = state.bitboards[1];
-  while(p < 6){
-    for(int i = 0; i < 64; i++){
-      if(whiteBitboard[p] & 1ULL << i){
-        data[p * 64 + i] = 1.0f;
+
+  for(int pos = 0; pos < 64; pos++){
+    int p = 0;
+    while(p < 6){
+      if(whiteBitboard[p] & 1ULL << pos){
+        data[pos * 17 + p] = 1.0f;
       }
-    }
-    p++;
-  }
-  while(p < 12){
-    for(int i = 0; i < 64; i++){
-      if(blackBitboard[p-6] & 1ULL << i){
-        data[p * 64 + i] = 1.0f;
+      if(blackBitboard[p] & 1ULL << pos){
+        data[pos * 17 + p + 6] = 1.0f;
       }
+      p++;
     }
-    p++;
-  }
-  while(p < 16){
-    if(state.castleState & 1ULL << (p-12)){
-      for(int i = 0; i < 64; i++){
-        data[p * 64 + i] = 1.0f;
+    p = 12;
+    while(p < 16){
+      if(state.castleState & 1ULL << (p - 12)){
+        data[pos * 17 + p] = 1.0f;
       }
+      p++;
     }
-    p++;
-  }
+}
   if(state.enpassant != 0ULL){
     int pos = __builtin_ctzll(state.enpassant);
-    data[p * 64 + pos] = 1.0f;
+    data[pos * 17 + 16] = 1.0f;
   }
   return T;
 }

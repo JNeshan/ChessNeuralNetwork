@@ -6,14 +6,14 @@
 #include <string>
 #include "cuda_runtime.h"
 #include "curand.h"
-#include "tensor.h"
+#include "tensor.cuh"
 
 struct cuRAND;
 
 class Generator{
 public:
   Generator();
-  static void tGen(Tensor& T);
+  static void tGen(Tensor<float>& T);
   //populates data with random values
   static void dGen(const int s, float* data);
   //populates data with ascending values starting at 0

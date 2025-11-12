@@ -39,9 +39,9 @@ tanhLayer::~tanhLayer(){
   TryCuda(cudnnDestroyActivationDescriptor(actD));
 }
 
-Tensor tanhLayer::forward(Tensor& T, bool train){
+Tensor tanhLayer::forward(Tensor<__half>& T, bool train){
   
-  TryCuda(cudnnSetTensor4dDescriptor(tensorD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, T.size, 1, 1, 1));
+  TryCuda(cudnnSetTensor4dDescriptor(tensorD, CUDNN_TENSOR_NHWC, CUDNN_DATA_FLOAT, T.size, 1, 1, 1));
   TryCuda(cudnnActivationForward(nnHandle, actD, &mx, tensorD, T.gpuData(), &mn, tensorD, T.gpuData()));
   if(train){
     this->output = T;
@@ -49,7 +49,7 @@ Tensor tanhLayer::forward(Tensor& T, bool train){
   return std::move(T);
 }
 
-Tensor tanhLayer::backward(Tensor& gradient){
+Tensor tanhLayer::backward(Tensor<__half>& gradient){
   Tensor iGrad(output.dimensions, TensorLocation::GPU, output.n);
   TryCuda(cudnnActivationBackward(nnHandle, actD, &mx, tensorD, output.gpuData(), tensorD, 
                                   gradient.gpuData(), tensorD, output.gpuData(), &mn, tensorD, iGrad.gpuData()));

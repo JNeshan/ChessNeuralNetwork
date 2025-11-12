@@ -23,13 +23,13 @@ NormalizationLayer::NormalizationLayer(bool conv, int channels) : scale({1, chan
 
   TryCuda(cudnnCreateTensorDescriptor(&inpD));
   TryCuda(cudnnCreateTensorDescriptor(&memD));
-  TryCuda(cudnnSetTensor4dDescriptor(memD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, 1, channels, 1, 1));
+  TryCuda(cudnnSetTensor4dDescriptor(memD, CUDNN_TENSOR_NHWC, CUDNN_DATA_FLOAT, 1, channels, 1, 1));
 }
 
 NormalizationLayer::NormalizationLayer(const NormalizationLayer& lay) : scale(lay.scale), bias(lay.bias), saveMean(lay.saveMean), saveVariance(lay.saveVariance), runMean(lay.runMean), runVariance(lay.runVariance), biasGrad(lay.biasGrad.dimensions, TensorLocation::GPU, lay.biasGrad.n), scaleGrad(lay.scaleGrad.dimensions, TensorLocation::GPU, lay.scaleGrad.n), mode(lay.mode){
   TryCuda(cudnnCreateTensorDescriptor(&this->inpD));
   TryCuda(cudnnCreateTensorDescriptor(&this->memD));
-  TryCuda(cudnnSetTensor4dDescriptor(this->memD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, 1, this->bias.dimensions[1], 1, 1));
+  TryCuda(cudnnSetTensor4dDescriptor(this->memD, CUDNN_TENSOR_NHWC, CUDNN_DATA_FLOAT, 1, this->bias.dimensions[1], 1, 1));
   this->epsilon = lay.epsilon;
 }
 
@@ -39,9 +39,9 @@ std::unique_ptr<Layer> NormalizationLayer::clone(){
   return(std::make_unique<NormalizationLayer>(*this));
 }
 
-Tensor NormalizationLayer::forward(Tensor& T, bool train){
+Tensor NormalizationLayer::forward(Tensor<__half>& T, bool train){
   auto start = std::chrono::steady_clock::now();
-  TryCuda(cudnnSetTensor4dDescriptor(this->inpD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, T.dimensions[0], T.dimensions[1], T.dimensions[2], T.dimensions[3]));
+  TryCuda(cudnnSetTensor4dDescriptor(this->inpD, CUDNN_TENSOR_NHWC, CUDNN_DATA_FLOAT, T.dimensions[0], T.dimensions[1], T.dimensions[2], T.dimensions[3]));
   
   if(train){
     this->input = T;
@@ -56,7 +56,7 @@ Tensor NormalizationLayer::forward(Tensor& T, bool train){
   ////std::cout<<std::string("Time in normalization: ") + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count())<<std::endl;  
   return std::move(T);
 }
-Tensor NormalizationLayer::backward(Tensor& gradient){
+Tensor NormalizationLayer::backward(Tensor<__half>& gradient){
   auto start = std::chrono::steady_clock::now();
   auto elapsed = std::chrono::steady_clock::now() - start;
   TryCuda(cudnnBatchNormalizationBackward(nnHandle, this->mode, &mx, &mn, &mx, &mn, this->inpD, this->input.gpuData(), this->inpD, gradient.gpuData(), this->inpD, gradient.gpuData(), this->memD,

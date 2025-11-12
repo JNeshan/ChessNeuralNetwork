@@ -4,38 +4,38 @@
 DataCollection::DataCollection(size_t size) : capacity(size){}
 
 void DataCollection::add(std::vector<Tensor>& i, std::vector<Tensor>& p, std::vector<Tensor>& v){
-  std::lock_guard<std::mutex> lock(this->gDataMutex);
+  std::lock_guard<std::mutex> lock(this->gDataMutex); //locks mutex before modifying member
   for(int j = 0; j < i.size(); j++){
-    this->data.push_back(std::make_tuple(std::move(i[j]), std::move(p[j]), std::move(v[j])));
+    this->data.push_back(std::make_tuple(std::move(i[j]), std::move(p[j]), std::move(v[j]))); 
   }
   while(this->data.size() > capacity){
-    data.pop_front();
+    data.pop_front(); //maintains maximum capacity
   }
 }
 
 std::tuple<Tensor, Tensor, Tensor> DataCollection::sample(){
   std::vector<Tensor*> inp, pol, val;
-  Tensor inpT, polT, valT;
-  int sampleSize = 512;
+  Tensor inpT, polT, valT; //blank tensors to convert sets of tensors into one large batched tensor
+  int sampleSize = 512; //number of training tensors retrieved for processing
   inp.reserve(sampleSize); pol.reserve(sampleSize); val.reserve(sampleSize);
-  std::lock_guard<std::mutex> lock(this->gDataMutex);
-  std::srand(time(0));
+  std::lock_guard<std::mutex> lock(this->gDataMutex); //lock mutex to prevent race condition
+  std::srand(time(0)); 
   for(int i = 0; i < sampleSize; i++){
-    int r = rand() % this->data.size();
+    int r = rand() % this->data.size(); //finds a random index and takes it
     inp.push_back(&std::get<0>(this->data[r]));
     pol.push_back(&std::get<1>(this->data[r]));
     val.push_back(&std::get<2>(this->data[r]));
   }
 
-  inpT.batchBuild(inp);
+  inpT.batchBuild(inp); //uses the set to construct one large batched tensor
   polT.batchBuild(pol);
   valT.batchBuild(val);
-  inpT.gpuSend();
+  inpT.gpuSend(); //ensuring gpu stored before returning
   polT.gpuSend();
   valT.gpuSend();
   return std::make_tuple(std::move(inpT), std::move(polT), std::move(valT));
 }
-
+//constructs the neural network structure
 ChessAI::ChessAI(){
   std::vector<std::unique_ptr<Layer>> tmpBody, tmpValue, tmpPolicy;
   
@@ -64,27 +64,37 @@ ChessAI::ChessAI(){
   tmpValue.push_back(std::make_unique<tanhLayer>());
   this->network = std::make_unique<NeuralNetwork>(tmpBody, tmpPolicy, tmpValue);
 }
-
+//smart pointers sure are handy
 ChessAI::~ChessAI(){
 
 }
-
+//initiates self teaching loop
 void ChessAI::train(){
-  DataCollection gameCollection(50000);
-  NeuralNetwork* net = this->network.get();
-  std::unique_ptr<NeuralNetwork> evalNetPtr(std::make_unique<NeuralNetwork>(*net));
+  DataCollection gameCollection(50000); //represents maximum stored sample size
+  NeuralNetwork* net = this->network.get(); //raw ptr
+  std::unique_ptr<NeuralNetwork> evalNetPtr(std::make_unique<NeuralNetwork>(*net)); //creates a unique copy of the network to use strictly for evaluations
   std::atomic<int> refresh = 0; //tracking number of tensors trained since evaluation network was updated
-  int threshold, trainingStages, trainingSize, threads, updCnt;
   std::ifstream iF("fens.txt");
-  std::thread evaluationThread, trainingThread, observerThread;
+  //evaluation thread used to run quick evaluations of games
+  //training thread used to perform training runs of the network
+  //observer thread used for debugging
+  //generator threads used for playing games to use for creating training data
+  std::thread evaluationThread, trainingThread, observerThread; 
   std::vector<std::thread> generatorThreads;
+  //evalnet mutex prevents race condtions for the evaluation network copy
+  //mainnet mutex prevents race conditions for the primary member network
   std::mutex lEvalNetMutex, lMainNetMutex;
   std::shared_mutex lGenMutex;
+  //
   std::atomic<int> active = 0;
+  //dataReady marks if enough training data has generated to begin the training loop
+  //run controls whether all the threads loops keep running
+  //evalWaiting is used to signal the generator threads to block when the evaluation network needs to update but still allowing the evaluation to run,
+  //which is necessary for the generator threads to reach their mutex
   std::atomic<bool> dataReady = false, run = true, evalWaiting = false;
 
   std::cout<<"Start"<<std::endl;
-
+  //creates set of fens used to generate initial board states for the games that are played
   std::vector<std::string> fens;
   std::string line;
   while(std::getline(iF, line)){
@@ -94,25 +104,27 @@ void ChessAI::train(){
   }
   iF.close();
   
-  threshold = 300;
-  trainingStages = 1;
-  trainingSize = 1;
-  threads = 30;
-  updCnt = 2000;
+  int threshold = 300; //search depth of mcts
+  int trainingStages = 1; //unused
+  int trainingSize = 1; //unused
+  int threads = 30; //number of generator threads
+  int updCnt = 2000; //number of states trained on before the evaluation network should be updated
+  //change updCnt and refresh to reflect number of training loops done rather than number of game states
 
   while(true){
+    
     trainingThread = std::thread([net, &lMainNetMutex, &gameCollection, &run, &dataReady, &refresh]{
       std::srand(std::time(0));
-      while(!dataReady && run){
+      while(!dataReady && run){ //training thread idles until starting threshold is met
         //ThreadControl::cout(std::to_string(refresh));
         std::this_thread::sleep_for(std::chrono::seconds(5));
       }
       std::cout<<"Training thread started"<<std::endl;
       while(run){
-        std::unique_lock<std::mutex> netLock(lMainNetMutex);
-        std::tuple<Tensor, Tensor, Tensor> tmp = gameCollection.sample();
-        auto& [inp, pol, val] = tmp;
-        Tensor inpT, polT, valT;
+        std::unique_lock<std::mutex> netLock(lMainNetMutex); //enforces lock before training
+        std::tuple<Tensor, Tensor, Tensor> tmp = gameCollection.sample(); //generates sample collection
+        auto& [inp, pol, val] = tmp; //
+        //Tensor inpT, polT, valT;
         net->train(inp, pol, val, 0.2);
       }
       ThreadControl::cout(std::string("Training thread terminating"));
@@ -131,24 +143,29 @@ void ChessAI::train(){
     
     for(int i = 0; i < threads; i++){
       generatorThreads.emplace_back([&evalNetPtr, &lEvalNetMutex, &gameCollection, &active, &run, &evalWaiting, &lGenMutex, &fens, &refresh, threshold, &dataReady]{
-        auto threadId = std::this_thread::get_id();
+        auto threadId = std::this_thread::get_id(); //threads unique id, used for generating game output file names for testing
         int numericThreadId = std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000;
-        std::srand(numericThreadId);
-        std::shared_lock<std::shared_mutex> genLock(lGenMutex);
+        std::srand(numericThreadId); //its random seeded with random so why not
+        //creates a shared lock on the generator mutex so all the generator threads hold it
+        //this enforces every generator thread needing to be done before another thread can place a strict mutex
+        std::shared_lock<std::shared_mutex> genLock(lGenMutex); 
         
         while(run){
+          //unlocks so the only time it isn't locking it is after its finished a game and before it starts a new one
+          //this is so the evaluation network is only updated after every generator thread has completed the game they're playing
+          //which is necessary to ensure each game uses the same version of the network the whole way through
           genLock.unlock();
-          if(evalWaiting){
-            std::unique_lock<std::mutex> lock(lEvalNetMutex); //blocks until evaluation thread finishes updating the network
+          if(evalWaiting){ //if evaluation thread is waiting for the generator threads to terminate
+            std::unique_lock<std::mutex> lock(lEvalNetMutex); //blocks each generator until evaluation thread finishes updating the network then immediately unblocks
           }
           genLock.lock();
-          int r = std::rand() % 960;
+          int r = std::rand() % fens.size(); //grabs random starting fen
           std::string randFen = fens[r];
-          MCTS game(*evalNetPtr, threshold);
-          game.runGame(randFen, evalWaiting, genLock, lEvalNetMutex);
+          MCTS game(*evalNetPtr, threshold); //game simulation object creation
+          game.runGame(randFen, evalWaiting, genLock, lEvalNetMutex); 
           gameCollection.add(game.input, game.policy, game.value);
           refresh += game.input.size();
-          if(refresh > 512){
+          if(refresh > 512){ //checks if enough training data has been generated to tell the training thread to start
             dataReady = true;
           }
         }
@@ -157,30 +174,38 @@ void ChessAI::train(){
     }
 
   evaluationThread = std::thread([net, &evalNetPtr, &lEvalNetMutex, &lMainNetMutex, &gameCollection, &refresh, &active, updCnt, &run, &evalWaiting, &lGenMutex, &dataReady]{
-    std::this_thread::sleep_for(std::chrono::seconds(5));
+    std::this_thread::sleep_for(std::chrono::seconds(5)); //initial buffer
     while(run){
+      //condition currently updates based on number of samples collected and not amount of training performed, fix
       if(refresh > updCnt && dataReady){
-        std::unique_lock<std::mutex> evalLock(lEvalNetMutex);
+        //locks evalnet mutex so the generator threads block, must always be free when evaluationThread is not blocking it
+        //must be locked before evalWaiting is updated
+        std::unique_lock<std::mutex> evalLock(lEvalNetMutex); 
         evalWaiting = true;
+        //checks if gen mutex can be locked without actually locking, loop continues while this is false or until the mutex can be locked
+        //standard evaluation loop runs until all generator games are finished since it is needed for them to do so
         while(!lGenMutex.try_lock()){
           auto* evalNetwork = evalNetPtr.get();
           evalNetwork->evaluationLoop();
         }
-
+        //creates a unique lock over the generator mutex, probably redundant with the other mutexs
         std::unique_lock<std::shared_mutex> genLock(lGenMutex);
+        //locks mainnet mutex to avoid race condition with training thread
         std::unique_lock<std::mutex> netLock(lMainNetMutex);
+        //deletes the old copy
         evalNetPtr.reset();
+        //copies the most current network state
         evalNetPtr = std::make_unique<NeuralNetwork>(*net);
-        refresh = 0;
-        evalWaiting = false;
+        refresh = 0; //resets refresh threshold
+        evalWaiting = false; //toggling atomic
       }
-      
-      auto* evalNetwork = evalNetPtr.get();
+      //constantly runs evaluation network passes
+      auto* evalNetwork = evalNetPtr.get(); 
       evalNetwork->evaluationLoop();
     }
     ThreadControl::cout(std::string("Evaluation thread terminating"));
   });
-
+    //waits for all threads to finish before terminating
     while(evaluationThread.joinable()){
       evaluationThread.join();
     }

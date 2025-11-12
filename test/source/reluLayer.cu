@@ -34,14 +34,14 @@ std::unique_ptr<Layer> ReLULayer::clone(){
 }
 
 
-Tensor ReLULayer::forward(Tensor& T, bool train){
+Tensor ReLULayer::forward(Tensor<__half>& T, bool train){
   if(train){
     this->input = T;
   }
   auto start = std::chrono::steady_clock::now();
 
   auto elapsed = std::chrono::steady_clock::now() - start;
-  TryCuda(cudnnSetTensor4dDescriptor(tensorD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, T.size, 1, 1, 1));
+  TryCuda(cudnnSetTensor4dDescriptor(tensorD, CUDNN_TENSOR_NHWC, CUDNN_DATA_FLOAT, T.size, 1, 1, 1));
   TryCuda(cudnnActivationForward(nnHandle, reLU, &mx, tensorD, T.gpuData(), &mn, tensorD, T.gpuData()));
   
   elapsed = std::chrono::steady_clock::now() - start;
@@ -49,7 +49,7 @@ Tensor ReLULayer::forward(Tensor& T, bool train){
   return T;
 }
 
-Tensor ReLULayer::backward(Tensor& gradient){
+Tensor ReLULayer::backward(Tensor<__half>& gradient){
   Tensor iGrad(input.dimensions, TensorLocation::GPU, input.n);
   TryCuda(cudnnActivationBackward(nnHandle, reLU, &mx, tensorD, gradient.gpuData(), tensorD, gradient.gpuData(), tensorD, input.gpuData(), &mn, tensorD, iGrad.gpuData()));  
   return std::move(iGrad);

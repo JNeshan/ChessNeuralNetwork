@@ -20,16 +20,16 @@ public:
   virtual std::unique_ptr<Layer> clone() override;
   //ResidualBlock(const int channels, const int filterSize, const int filterCount);
   //void appendLayers(NeuralNetwork& net);
-  virtual Tensor forward(Tensor& T, bool train) override;
-  virtual Tensor backward(Tensor& gradient) override;
+  virtual Tensor<__half> forward(Tensor<__half>& T, bool train) override;
+  virtual BackwardPackage backward(Tensor<__half>& gradient) override;
   virtual void genTensorData() override;
   virtual void loadTensor(std::ifstream& iF);
   virtual void saveTensor(std::ofstream& oF);
   virtual void cleanSave(std::ofstream& oF);
-  virtual std::pair<std::vector<Tensor*>, std::vector<Tensor*>> getLearningData() override;
+  
 private:
   std::vector<std::unique_ptr<Layer>> layers;
-  Tensor inp, inpGrad;
+  Tensor<__half> inp, inpGrad;
 };
 
 #endif

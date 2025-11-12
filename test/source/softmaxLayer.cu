@@ -35,7 +35,7 @@ std::unique_ptr<Layer> SoftmaxLayer::clone(){
   return(std::make_unique<SoftmaxLayer>(*this));
 }
 
-Tensor SoftmaxLayer::forward(Tensor& T, bool train){
+Tensor SoftmaxLayer::forward(Tensor<__half>& T, bool train){
 
   if(T.n != 2){ //input must be 2 dimensional
     throw std::runtime_error("Softmax input invalid n = " + std::to_string(T.n));
@@ -44,12 +44,12 @@ Tensor SoftmaxLayer::forward(Tensor& T, bool train){
   if(output.size != T.size){ //check to ensure the matrices are the same size (also means 2nd dimensions are equal)
     throw std::runtime_error("Bad softmax input"); 
   }
-  TryCuda(cudnnSetTensor4dDescriptor(tensorD, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, T.dimensions[0], T.dimensions[1], 1, 1)); //input descriptor
+  TryCuda(cudnnSetTensor4dDescriptor(tensorD, CUDNN_TENSOR_NHWC, CUDNN_DATA_FLOAT, T.dimensions[0], T.dimensions[1], 1, 1)); //input descriptor
   TryCuda(cudnnSoftmaxForward(nnHandle, CUDNN_SOFTMAX_FAST, CUDNN_SOFTMAX_MODE_INSTANCE, &mx, tensorD, T.gpuData(), &mn, tensorD, output.gpuData()));
   return output;
 }
 
-Tensor SoftmaxLayer::backward(Tensor& gradient){
+Tensor SoftmaxLayer::backward(Tensor<__half>& gradient){
   if(gradient.n != 2 || gradient.size < output.size){
     throw std::runtime_error("Softmax recieved bad gradient or recorded faulty output");
   }

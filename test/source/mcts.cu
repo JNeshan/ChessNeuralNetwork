@@ -109,14 +109,15 @@ uint16_t MCTS::search(chessState& init){
     chessState stateCpy = init; //deep copies initial state
     this->selectionRecurse(*node, stateCpy, path, stateTree, pending);
   }
-
+  //after threshold reached waits until every state recieves its evaluation before finishing the algorithm
   while(!pending.empty()){
     RequestPackage* pendPtr = pending.front().get();
     pendPtr->policyFuture.wait();
     this->acceptEvaluations(pending);
   }
-
+  //cache high score
   int high = -1; 
+  //cache best move
   uint16_t move;
   this->policy.push_back(Tensor({1, 4672}, TensorLocation::CPU)); //creating correct policy tensor
   float* data = this->policy[this->policy.size()-1].cpuData(); 
@@ -145,16 +146,16 @@ double MCTS::selectionRecurse(Node& node, chessState& state, std::list<std::pair
     return 0;
   }
 
-  node.explored = true;
+  node.explored = true; //marks the passed node as explored
 
   //select move from nodes edges
   double high = -9999; //tracks the highest score
-  uint16_t move;
+  uint16_t move; //cache best move
   const double balance = 1; //tweakable, to balance the q and u values
   Edge* traversed = nullptr; //pointer to best edge yet
 
   for(auto& [potMove, edgePtr] : node.children){ //iterates over the move, edge map
-    if(edgePtr == nullptr){
+    if(edgePtr == nullptr){ //throws if node has no children
       throw std::runtime_error("Edge is nullptr");
     }
     auto& edgeRef = *edgePtr.get(); //creates reference to edge
@@ -165,8 +166,8 @@ double MCTS::selectionRecurse(Node& node, chessState& state, std::list<std::pair
       }
     }
     else{
-      chessState tmp = state;
-      tmp.updateBoard(potMove);
+      chessState tmp = state; //copies the state for simulation
+      tmp.updateBoard(potMove); //simulates move
       uint64_t key = tmp.getKey();
       if(tree.find(key) != tree.end()){ //checks if child reference needs to be added
         edgeRef.child = tree[key].get(); //adds reference
@@ -179,10 +180,11 @@ double MCTS::selectionRecurse(Node& node, chessState& state, std::list<std::pair
     if(edgeRef.n){ //no policy score if edge never traversed 
       q = edgeRef.w / edgeRef.n;
     }
+    //calculating node score
     double u = balance * edgeRef.p * (sqrt(node.n) / (1 + edgeRef.n)); 
     double v = q + u;
-    if(v > high){
-      traversed = &edgeRef;
+    if(v > high){ //if score is better than current best, updates
+      traversed = &edgeRef; 
       high = v;
       move = potMove;
     }
@@ -197,9 +199,9 @@ double MCTS::selectionRecurse(Node& node, chessState& state, std::list<std::pair
   if(move == 0){
     //ThreadControl::cout(std::string("0 move"));
   }
-  path.push_back({&node, move}); 
-  state.updateBoard(move);
-  double v2;
+  path.push_back({&node, move}); //adds selected move to path
+  state.updateBoard(move); //updates running simulation state
+  double v2; //score variable
   if(tree.find(state.getKey()) == tree.end()){
     v2 = this->expand(node, state, move, path, tree, pending);
   }

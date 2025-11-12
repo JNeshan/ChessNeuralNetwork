@@ -5,14 +5,13 @@
 #include "cuda_runtime.h"
 #include "cudnn.h"
 #include "cublas.h"
-#include "tensor.h"
-
+#include "tensor.cuh"
 class MatriceMath{
 public:
   MatriceMath();
-  void add(const Tensor& N, const Tensor& B, Tensor& O);
-  void multiply(const Tensor& M, const Tensor& N, Tensor& O);
-  void convolution(const Tensor& M, const Tensor& F, Tensor& O);
+  void add(const Tensor<__half>& N, const Tensor<__half>& B, Tensor<__half>& O);
+  void multiply(const Tensor<__half>& M, const Tensor<__half>& N, Tensor<__half>& O);
+  void convolution(const Tensor<__half>& M, const Tensor<__half>& F, Tensor<__half>& O);
   cudnnHandle_t cudnn;
   cublasHandle_t cublas;
 };

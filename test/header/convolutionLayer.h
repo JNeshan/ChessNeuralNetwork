@@ -6,27 +6,28 @@
 
 class ConvolutionLayer : public Layer {
 public:
-  ConvolutionLayer(const int fC, const int iC, const int fH, const int fW, const int pad);
+  ConvolutionLayer(const int fC, const int fH, const int fW, const int iC, const int pad);
   ConvolutionLayer(const ConvolutionLayer& lay);
   virtual ~ConvolutionLayer();
-  virtual Tensor forward(Tensor& T, bool train) override;
-  virtual Tensor backward(Tensor& gradient) override;
+  virtual Tensor<__half> forward(Tensor<__half>& T, bool train) override;
+  virtual BackwardPackage backward(Tensor<__half>& gradient) override;
   virtual void genTensorData() override;
   virtual void loadTensor(std::ifstream& iF) override;
   virtual void saveTensor(std::ofstream& oF) override;
   virtual void cleanSave(std::ofstream& oF) override; 
   virtual std::unique_ptr<Layer> clone() override;
-  virtual std::pair<std::vector<Tensor*>, std::vector<Tensor*>> getLearningData() override;
+  
 
-  Tensor input, filters, bias, iGrad, fGrad, bGrad; //filter and bias tensors
+  Tensor<__half> input, filters, bias, iGrad, fGrad, bGrad; //filter and bias tensors
 
 
 private:
   const int padding;
+  int n, h, w, c; //
   bool forw, back;
-  size_t wsSizeF, wsSizeB;
-  void* wsPtrF;
-  void* wsPtrB;
+  //size_t wsSizeF, wsSizeB; remove for global workspace
+  //void* wsPtrF;
+  //void* wsPtrB;
   cudnnFilterDescriptor_t filterD; 
   cudnnTensorDescriptor_t inputD, biasD, outputD;
   cudnnActivationDescriptor_t actD;

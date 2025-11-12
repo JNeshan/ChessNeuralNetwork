@@ -23,7 +23,7 @@ std::unique_ptr<Layer> ResidualBlock::clone(){
   return(std::make_unique<ResidualBlock>(*this));
 }
 
-Tensor ResidualBlock::forward(Tensor& T, bool train){
+Tensor ResidualBlock::forward(Tensor<__half>& T, bool train){
   auto start = std::chrono::steady_clock::now();
   this->inp = Tensor(T);
   for(int i = 0; i < layers.size()-1; i++){
@@ -41,7 +41,7 @@ Tensor ResidualBlock::forward(Tensor& T, bool train){
   return std::move(T);
 }
 
-Tensor ResidualBlock::backward(Tensor& gradient){
+Tensor ResidualBlock::backward(Tensor<__half>& gradient){
   this->inpGrad = layers[layers.size()-1]->backward(gradient);
   Tensor skipGrad(inpGrad);
   for(int i = layers.size() - 2; i >= 0; i--){

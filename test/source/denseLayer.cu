@@ -21,14 +21,14 @@ __inline__ void TryCuda(cublasStatus_t err){
 
 
 
-__global__ void biasAddKernel(const float* bias, float* out, const int n, const int m){
+__global__ void biasAddKernel(const __half* bias, __half* out, const int n, const int m){
   const int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if(idx < n * m){
     out[idx] += bias[idx % n];
   }
 }
 
-__global__ void bGradKernel(const float* grad, float* out, const int m, const int n){
+__global__ void bGradKernel(const __half* grad, __half* out, const int m, const int n){
   extern __shared__ float shared[]; //initializes space for shared memory
   const int colIdx = blockIdx.x; //column index the thread block works on
   const int thId = threadIdx.x; //threads relative id to its block
@@ -67,23 +67,22 @@ std::unique_ptr<Layer> DenseLayer::clone(){
   return(std::make_unique<DenseLayer>(*this));
 }
 
-Tensor DenseLayer::forward(Tensor& T, bool train){
+Tensor<__half> DenseLayer::forward(Tensor<__half>& T, bool train){
   auto start = std::chrono::steady_clock::now();
   if(T.n != 2){
     throw std::runtime_error("Wrong dimensional tensor for dense layer.");
   }
-  if(T.dimensions[1] != weight.dimensions[0]){
+  if(T.dimensions[3] != weight.dimensions[0]){
     throw std::runtime_error("Weight and input tensor dimensions incompatible for multiplication");
   }
 
-  Tensor output({T.dimensions[0], weight.dimensions[1]}, TensorLocation::GPU);
-
-  TryCuda(cublasSgemm_v2(blasHandle, CUBLAS_OP_N, CUBLAS_OP_N, weight.dimensions[1], T.dimensions[0], T.dimensions[1],
-             &mx, weight.gpuData(), weight.dimensions[1], T.gpuData(), T.dimensions[1], &mn, output.gpuData(), output.dimensions[1]));
+  Tensor<__half> output({T.dimensions[0], 1, 1, weight.dimensions[3]}, TensorLocation::GPU);
+  cublasHgemm(blasHandle, CUBLAS_OP_N, CUBLAS_OP_N, weight.dimensions[3], T.dimensions[0], T.dimensions[3],
+              &mx, weight.gpuData(), weight.dimensions[3], T.gpuData(), T.dimensions[3], &mn, output.gpuData(), output.dimensions[3]);
   const int thCount = 256, m = (output.size + thCount - 1) / thCount;
   dim3 blockDim(thCount);
   dim3 gridDim(m);
-  biasAddKernel<<<gridDim, blockDim>>>(bias.gpuData(), output.gpuData(), output.dimensions[0], output.dimensions[1]);
+  biasAddKernel<<<gridDim, blockDim>>>(bias.gpuData(), output.gpuData(), output.dimensions[0], output.dimensions[3]);
   auto elapsed = std::chrono::steady_clock::now() - start;
   if(train){
     this->input = std::move(T);
@@ -93,9 +92,9 @@ Tensor DenseLayer::forward(Tensor& T, bool train){
   return output;
 }
 
-Tensor DenseLayer::backward(Tensor& gradient){
+BackwardPackage DenseLayer::backward(Tensor<__half>& gradient){
   
-  Tensor iGrad(input.dimensions, TensorLocation::GPU, input.n);
+  Tensor<__half> iGrad(this->input.dimensions, TensorLocation::GPU, input.n);
 
   /*
   inp: n x iF
@@ -105,12 +104,10 @@ Tensor DenseLayer::backward(Tensor& gradient){
   */
 
   //calculates the input gradient
-  TryCuda(cublasSgemm_v2(blasHandle, CUBLAS_OP_T, CUBLAS_OP_N, weight.dimensions[0], gradient.dimensions[0], gradient.dimensions[1], &mx,
-                        weight.gpuData(), weight.dimensions[1], gradient.gpuData(), gradient.dimensions[1], &mn, iGrad.gpuData(), iGrad.dimensions[1])); 
-
+  TryCuda(cublasHgemm(blasHandle, CUBLAS_OP_T, CUBLAS_OP_N, weight.dimensions[0], gradient.dimensions[0], gradient.dimensions[1], &mx,
+                        weight.gpuData(), weight.dimensions[1], gradient.gpuData(), gradient.dimensions[1], &mn, iGrad.gpuData(), iGrad.dimensions[1]));
   //calculates weight gradient 
-
-  TryCuda(cublasSgemm_v2(blasHandle, CUBLAS_OP_N, CUBLAS_OP_T, gradient.dimensions[1], input.dimensions[1], input.dimensions[0],
+  TryCuda(cublasHgemm(blasHandle, CUBLAS_OP_N, CUBLAS_OP_T, gradient.dimensions[1], input.dimensions[1], input.dimensions[0],
                         &mx, gradient.gpuData(), gradient.dimensions[1], input.gpuData(), input.dimensions[1], &mn, wGrad.gpuData(), wGrad.dimensions[1]));
 
   const int thCount = 256; //threads per block
@@ -122,8 +119,12 @@ Tensor DenseLayer::backward(Tensor& gradient){
 }
 
 void DenseLayer::genTensorData(){
-  Generator::tGen(bias);
-  Generator::tGen(weight);
+  Tensor<float> tmpB(this->bias), tmpW(this->weight);
+  Generator::tGen(tmpB);
+  Generator::tGen(tmpW);
+
+  this->bias = tmpB;
+  this->weight = tmpW;
 }
 
 void DenseLayer::loadTensor(std::ifstream& iF){
@@ -161,8 +162,4 @@ void DenseLayer::cleanSave(std::ofstream& oF){
   bias.writeTensor(oF);
   weight.gpuSend();
   bias.gpuSend();
-}
-
-std::pair<std::vector<Tensor*>, std::vector<Tensor*>> DenseLayer::getLearningData(){
-  return {{&weight, &bias}, {&wGrad, &bGrad}};
 }

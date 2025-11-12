@@ -3,7 +3,7 @@
 #include <iostream>
 
 #include <fstream>
-#include "tensor.h"
+#include "tensor.cuh"
 #include "matriceMath.h"
 #include "generator.h"
 #include "optimizer.h"
@@ -23,11 +23,15 @@
 
 struct DataCollection{
   DataCollection(size_t size);
-  void add(std::vector<Tensor>& i, std::vector<Tensor>& p, std::vector<Tensor>& v);
-  std::tuple<Tensor, Tensor, Tensor> sample();
+  //adds training data tensor<float>s to the global collection
+  void add(std::vector<Tensor<float>>& i, std::vector<Tensor<float>>& p, std::vector<Tensor<float>>& v);
+  //grabs a random selection of the stored training data
+  std::tuple<Tensor<float>, Tensor<float>, Tensor<float>> sample();
   size_t capacity;
+  //used to prevent race conditions for asynchronous reading and writing processes
   std::mutex gDataMutex;
-  std::deque<std::tuple<Tensor, Tensor, Tensor>> data;
+  //global training data collection structure
+  std::deque<std::tuple<Tensor<float>, Tensor<float>, Tensor<float>>> data;
 };
 
 class ChessAI{
@@ -35,14 +39,15 @@ public:
   ChessAI();
   ~ChessAI();
   void play();
+  //starts and controls the self generation and training loop
   void train();
+  //populates the layers with random initial values
   void generateValues();
   void loadLayers(std::ifstream& iF);
   void saveLayers(std::ofstream& oF);
 private:
   std::vector<Layer*> body, policy, value;
   std::unique_ptr<NeuralNetwork> network;
-  
 };
 
 #endif

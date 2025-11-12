@@ -11,9 +11,10 @@ CUSRC = $(wildcard $(SRCDIR)/*.cu)
 CUOBJ = $(notdir $(CUSRC:.cu=.o))
 INCLUDES = -I$(HDRDIR) -I$(CHESSHDIR)
 CUDA_INC = -I/usr/local/cuda-12.9/include/
+TESTOBJ = generator.o
 
 
-.PHONY : program clean
+.PHONY : program clean tclean test
 .PRECIOUS : main
 program: main
 
@@ -21,14 +22,20 @@ debug: main
 	./clrChess.sh
 	gdb ./main
 
+test : tclean test.o $(TESTOBJ) 
+	nvcc $(NVCCFLAGS) -o $@ test.o $(TESTOBJ) $(LIBS)
+	./test
 
 main : main.o $(CHESSOBJ) $(CUOBJ)
-	nvcc $(NVCCFLAGS) $(CUDA_INC) -o $@ main.o $(CHESSOBJ) $(CUOBJ) $(LIBS)
+	nvcc $(NVCCFLAGS) -o $@ main.o $(CHESSOBJ) $(CUOBJ) $(LIBS)
 	./clrChess.sh
 	./main
 
 main.o : main.cpp
-	g++ $(CXXFLAGS) $(CUDA_INC) $ -c $< -o $@
+	g++ $(CXXFLAGS) $ -c $< -o $@
+
+test.o : test.cu
+	nvcc $(NVCCFLAGS) $(INCLUDES) -c $< -o $@
 
 %.o : $(SRCDIR)/%.cu
 	nvcc $(NVCCFLAGS) $(INCLUDES) -c $< -o $@
@@ -42,3 +49,6 @@ arch : arch.cu
 
 clean:
 	rm -rf arch *.o main
+
+tclean:
+	rm -rf test.o $(TESTOBJ)

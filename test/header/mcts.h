@@ -2,7 +2,7 @@
 #define MCTS_H
 
 #include "../chess/header/chessState.h"
-#include "tensor.h"
+#include "tensor.cuh"
 #include "tensorization.h"
 #include "neuralNetwork.h"
 #include "threadControl.h"
@@ -44,8 +44,8 @@ struct Node{
 struct RequestPackage{
   RequestPackage(std::list<std::pair<Node*, uint16_t>> pen);
   std::list<std::pair<Node*, uint16_t>> pendingNodes;
-  std::future<Tensor> valueFuture;
-  std::future<Tensor> policyFuture;
+  std::future<Tensor<__half>> valueFuture;
+  std::future<Tensor<__half>> policyFuture;
 };
 
 
@@ -60,7 +60,7 @@ public:
   void acceptEvaluations(std::list<std::unique_ptr<RequestPackage>>& pending);
   void runGame(std::string fen, std::atomic<bool>& evalWait, std::shared_lock<std::shared_mutex>& genLock, std::mutex& evalNetMutex);
   static std::atomic<int> savedStates;
-  std::vector<Tensor> input, policy, value;
+  std::vector<Tensor<__half>> input, policy, value;
 
 private:
   NeuralNetwork* network;

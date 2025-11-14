@@ -5,8 +5,10 @@
 #include <vector>
 #include <stdexcept>
 #include <iostream>
+#include <atomic>
 #include <fstream>
 #include <memory>
+#include <map>
 #include <cuda_fp16.h>
 #include <type_traits>
 #include <string>
@@ -14,10 +16,12 @@
 #include <iomanip>
 #include "cudnn.h"
 #include "cuda_runtime.h"
-#include "cublas.h"
+#include "cublas_v2.h"
 #include "curand.h"
 
-enum class TensorLocation {CPU, GPU};
+enum class TensorLocation {CPU, GPU}; //denotes the CPU/host and GPU/device
+enum class AllocationType {FIXED, DYNAMIC}; //denotes whether a tensor uses standard blocking cuda mem calls or aync stream-based cuda mem calls
+
 //The tensor class wraps a pointer to a contiguous array with data to represent it as an n-dimensional matrix, along with
 //handling the allocation, destruction, and transfer of memory in the CPU and GPU
 //The dimensions and overall size are necessary to perform the Cuda computations, and the dimension count n is needed to
@@ -58,6 +62,7 @@ A tensor can be freely reshaped as long as its total size and elements are uncha
 Two tensors can be added as long as they have the same size and T data type
 A tensor with -1 size is a blank object, is marked as stored in the GPU, should only be used to perform batch build function
 */
+
 
 __inline__ const char* curandGetErrorStringTen(curandStatus_t error) {
   switch (error) {
@@ -164,321 +169,337 @@ __global__ void AddKernel(const T* A, const U* B, V* out, const int size){
   }
 }
 
-//custom deleter for unique_ptr<T> in GPU memory (CUDA)
-template <typename T>
-struct CudaDeleter{
-  void operator()(T* p) const noexcept{ //called whenever the object owned by unique_ptr<T, CudaDeleter> is deleted with the pointer to the T value contianed passed as p
-    if(p) cudaFree(p); //frees if allocated
+struct StreamDeleter{
+  void operator()(cudaStream_t* p) const noexcept{
+    if(p){
+      TryCudaTen(cudaStreamDestroy(*p));
+    }
   }
 };
 
-template <typename T> 
+template <typename T, AllocationType ALLOC>
+struct HostDeleter{
+  HostDeleter() = default;
+  void operator()(T* p) const noexcept{
+    if(p){
+      if(ALLOC == AllocationType::FIXED){
+        delete[] p;
+      }
+      else{
+        TryCudaTen(cudaFreeHost(p));
+      }
+    }
+  }
+};
+
+//custom deleter for unique_ptr<T> in GPU memory (CUDA)
+template <typename T, AllocationType ALLOC>
+struct CudaDeleter{
+  std::shared_ptr<cudaStream_t> stream = nullptr;
+  CudaDeleter() = default;
+  CudaDeleter(std::shared_ptr<cudaStream_t>& str) : stream(str){
+  }
+  void operator()(T* p) const noexcept{ //called whenever the object owned by unique_ptr<T, CudaDeleter> is deleted with the pointer to the T value contianed passed as p
+    if(p){
+      if(ALLOC == AllocationType::FIXED){ 
+        TryCudaTen(cudaFree(p));
+      }
+      else{
+        TryCudaTen(cudaFreeAsync(p, *this->stream));
+      }
+    }
+  }
+};
+
+//custom key struct for tensor descriptor map
+template <typename T, AllocationType ALLOC>
+class Tensor;
+
+struct TensorKey{
+  std::vector<int> dimensions;
+  int n = 0;
+  int dataType = 0; //represents a tensors templated T type
+
+  template <typename T, AllocationType ALLOC>
+  TensorKey(const Tensor<T, ALLOC>& ten){
+    this->dimensions = ten.dimensions;
+    this->n = ten.n;
+    if constexpr(std::is_same_v<T, float>){
+      dataType = 2;
+    }
+    else if constexpr(std::is_same_v<T, __half>){
+      dataType = 1;
+    }
+    else{ //int8_t
+      dataType = 0;
+    }
+  }
+
+  
+  //tensor key values considered less than for the tensor with the first lower value in order of priority
+  //from dataType (float > __half > int8_t) > n (dimensionality) > dimensions[0] > ... > dimensions[3] 
+  //this ensures that if two tensors share the same traits used by a descriptor they will use the same descriptor
+  bool operator<(const TensorKey& rK) const noexcept{
+    return std::tie(this->dataType, this->n, this->dimensions[0], this->dimensions[3], this->dimensions[1], this->dimensions[2])
+    < std::tie(rK.dataType, rK.n, rK.dimensions[0], rK.dimensions[3], rK.dimensions[1], rK.dimensions[2]); //channels more likely to differ
+  }
+};
+
+
+
+template <typename T = float, AllocationType ALLOC = AllocationType::FIXED> 
 class Tensor {
 public:
 
-    static_assert(std::is_floating_point_v<T> || std::is_same_v<T,__half>, "Tensor<T>: T must be a floating point type or half"); //enforces data type restriction
+  inline static std::map<TensorKey, cudnnTensorDescriptor_t> descriptors{};
+  inline static std::atomic<size_t> totalDeviceMemAllocation{0};
+  inline static std::atomic<size_t> totalHostMemAllocation{0};
 
-    //blank constructor
-    Tensor() : dimensions(4), device(TensorLocation::GPU), n(-1), size(-1), hostData(nullptr), deviceData(nullptr){}
+  static_assert(std::is_floating_point_v<T> || std::is_same_v<T,__half> || std::is_same_v<T,int8_t>, "Tensor<T, ALLOC>: T must be a floating point type or half "); //enforces data type restriction
 
-    Tensor(const std::vector<int>& dim, const TensorLocation loc = TensorLocation::CPU, int nth = 4) : dimensions(dim), device(loc), n(nth), hostData(nullptr), deviceData(nullptr){
-      if(dim.size() != 4){
-        throw std::runtime_error("Given dimensions does not have 4 elements");
-      }
-      this->size = 1;
-      for(auto x : dim){ //computes size and ensures valid dimensions
-        if(x <= 0){
-          throw std::runtime_error("Non-positive dimension given");
-        }
-        this->size *= x;
-      }
+  //destructor
+  ~Tensor(){
+    this->deallocate();
+  } 
+
+  //blank constructor with light molding support
+  Tensor(TensorLocation loc = TensorLocation::GPU, cudaStream_t* str = nullptr) : stream(str, StreamDeleter()), hostData(nullptr, HostDeleter<T, ALLOC>()), deviceData(nullptr, CudaDeleter<T, ALLOC>(this->stream)){
+    this->device = loc;
+    this->n = -1;
+    this->size = -1;
+    this->dimensions = {};
+  }
+
+  //standard tensor constructor
+  Tensor(const std::vector<int>& dim, const TensorLocation loc = TensorLocation::CPU, int nth = 4, cudaStream_t* str = nullptr) : dimensions(dim), device(loc), n(nth), stream(str, StreamDeleter()), hostData(nullptr, HostDeleter<T, ALLOC>()), deviceData(nullptr, CudaDeleter<T, ALLOC>(this->stream)){
+    if constexpr(std::is_same_v<T, __half>){ //remove if cpu half added
       if(loc == TensorLocation::CPU){
-        if constexpr(!std::is_floating_point_v<T>){ //if stored on cpu must be full float
-          throw std::runtime_error("Non-float tensor constructed to CPU");
-        }
-        this->hostData = std::make_unique<T[]>(this->size); //allocating space
+        throw std::runtime_error("Half tensor being constructed on CPU");
       }
-      else{
-        T* tmpPtr = nullptr;
-        TryCudaTen(cudaMalloc((void**)&tmpPtr, this->size * sizeof(T)));
-        this->deviceData.reset(tmpPtr);  
-      }
+    } 
+
+    if(dim.size() != 4){ //dimensions shou
+      throw std::runtime_error("Given dimensions does not have 4 elements");
     }
-
-    Tensor(const Tensor<T>& r){
-      this->size = r.size; //basic members
-      this->device = r.device;
-      this->dimensions = r.dimensions;
-      this->n = r.n;
-      if(this->device == TensorLocation::CPU){
-        this->hostData = std::make_unique<T[]>(this->size); //allocating memory then copying over on CPU
-        memcpy(this->hostData.get(), r.hostData.get(), this->size * sizeof(T));
-        this->deviceData = nullptr; //consistency
-      }
-      else{
-        T* tmpPtr = nullptr; //allocating memory then copying over on the GPU
-        TryCudaTen(cudaMalloc((void**)&tmpPtr, this->size * sizeof(T))); 
-        this->deviceData.reset(tmpPtr);
-        TryCudaTen(cudaMemcpy(this->deviceData.get(), r.deviceData.get(), this->size * sizeof(T), cudaMemcpyDeviceToDevice));
-        this->hostData = nullptr;
-      }
+    if(nth <= 0 || nth > 4){
+      throw std::runtime_error("Invalid nth in constructor");
     }
-
-    //deep copy template constructor
-    template<typename U>
-    Tensor(const Tensor<U>& r){
-      this->size = r.size; //basic members
-      this->device = r.device;
-      this->dimensions = r.dimensions;
-      this->n = r.n;
-
-      if constexpr(std::is_same_v<T, U>){ //checks if both objects templated types are the same, shouldn't ever happen
-        std::cout<<"IMPOSSIBLE"<<std::endl;
-        if(this->device == TensorLocation::CPU){
-          this->hostData = std::make_unique<U[]>(this->size); //allocating memory then copying over on CPU
-          memcpy(this->hostData.get(), r.hostData.get(), this->size * sizeof(T));
-          this->deviceData = nullptr; //consistency
-        }
-        else{
-          T* tmpPtr = nullptr; //allocating memory then copying over on the GPU
-          TryCudaTen(cudaMalloc((void**)&tmpPtr, this->size * sizeof(T))); 
-          this->deviceData.reset(tmpPtr);
-          TryCudaTen(cudaMemcpy(this->deviceData.get(), r.deviceData.get(), this->size * sizeof(T), cudaMemcpyDeviceToDevice));
-          this->hostData = nullptr;
-        }
+    this->size = 1;
+    for(auto x : dim){ //computes size and ensures valid dimensions
+      if(x <= 0){
+        throw std::runtime_error("Non-positive dimension given");
       }
-      else{ //should always happen
-        if(this->device != TensorLocation::GPU){ //half should only ever be on GPU
-          throw std::runtime_error("Copied tensor using half stored on CPU");  
-        }
-        T* tmpPtr = nullptr; //allocating memory then calling appropriate conversion function
-        TryCudaTen(cudaMalloc((void**)&tmpPtr, this->size * sizeof(T)));
-        this->deviceData.reset(tmpPtr);
-        if constexpr(std::is_floating_point_v<U>){ //copied tensor is full, this is half
-          convertFloatToHalf(this->deviceData.get(), r.deviceData.get(), this->size);
-        }
-        else{ //converse
-          convertHalfToFloat(this->deviceData.get(), r.deviceData.get(), this->size);
-        }
-        this->hostData = nullptr;
-      }
+      this->size *= x;
     }
+    this->allocate();
+  }
+  //overload for easy 2d construction
+  Tensor(int batches, int inputChannels, const TensorLocation loc = TensorLocation::CPU, cudaStream_t* str = nullptr) : Tensor({batches, 1, 1, inputChannels}, loc, 2, str){}
+  //overload for easy 1d construction
+  Tensor(int inputChannels, const TensorLocation loc = TensorLocation::CPU, cudaStream_t* str = nullptr) : Tensor({1, 1, 1, inputChannels}, loc, 1, str){}
+  //constructor that models after another tensor and allocates space to the specified device without copying the data
+  Tensor(const Tensor<T, ALLOC>& r, const TensorLocation loc) : stream(r.stream), deviceData(nullptr, CudaDeleter<T, ALLOC>(this->stream)), hostData(nullptr, HostDeleter<T, ALLOC>()){
+    this->dimensions = r.dimensions;
+    this->n = r.n;
+    this->size = r.size;
+    this->device = loc;
+    this->allocate();
+  }
 
-    Tensor(Tensor<T>&& r){
+  //default copy constructor
+  Tensor(const Tensor<T, ALLOC>& r) : stream(r.stream), deviceData(nullptr, CudaDeleter<T, ALLOC>(this->stream)){
+    if(r.size <= 0){
+      throw std::runtime_error("Attemping to copy blank tensor");
+    }
+    this->copy(r);
+  }
+
+  template<typename U, AllocationType A>
+  Tensor(const Tensor<U, A>& r) : stream(r.stream), hostData(nullptr, HostDeleter<T, ALLOC>()), deviceData(nullptr, CudaDeleter<T, ALLOC>(this->stream)){
+    if(r.size <= 0){
+      throw std::runtime_error("Attemping to copy blank tensor");
+    }
+    this->copy(r);
+  }
+
+  //move constructors
+  //untemplated
+  Tensor(Tensor<T, ALLOC>&& r) : stream(r.stream), hostData(nullptr, HostDeleter<T, ALLOC>()), deviceData(nullptr, CudaDeleter<T, ALLOC>(this->stream)){
+    this->size = r.size;
+    this->device = r.device;
+    this->dimensions = r.dimensions;
+    this->n = r.n;
+    this->hostData.swap(r.hostData);
+    this->deviceData.swap(r.deviceData);
+  }
+
+  //templated move constructor
+  //default will override when possible so
+  //this is only used for type conversion
+  //which requires a full copy anyways
+  template <typename U>
+  Tensor(Tensor<U, ALLOC>&& r) : stream(r.stream), hostData(nullptr, HostDeleter<T, ALLOC>()), deviceData(nullptr, CudaDeleter<T, ALLOC>(this->stream)){
+    if(r.size <= 0){
+      throw std::runtime_error("Attemping to copy blank tensor");
+    }
+    this->copy(r);
+  }
+  
+  //move assignment operators
+  
+  //default move assignment operator
+  Tensor<T, ALLOC>& operator=(Tensor<T, ALLOC>&& r){
+    if(r.size <= 0){
+      throw std::runtime_error("Attemping to copy blank tensor");
+    }
+    if(this->device == r.device){
       this->size = r.size;
       this->device = r.device;
       this->dimensions = r.dimensions;
       this->n = r.n;
-      this->hostData.swap(r.hostData);
+      this->hostData.swap(r.hostData); 
       this->deviceData.swap(r.deviceData);
     }
-
-    //move constructor, does not benefit over deep when converting data type
-    template <typename U>
-    Tensor(Tensor<U>&& r){
-      this->size = r.size; //basic members
-      this->device = r.device;
-      this->dimensions = r.dimensions;
-      this->n = r.n;
-      if constexpr(std::is_same_v<T, U>){ //checking if both tensors use the same templated data type, performs fast ptr swap if so
-        this->hostData.swap(r.hostData);
-        this->deviceData.swap(r.deviceData);
-      }
-      else{ //if the templated data types differ, data type conversion is required
-        //so a move operation between data types is as slow as a regular deep copy
-        if(this->device != TensorLocation::GPU){ //half should only ever be on gpu
-          throw std::runtime_error("Moved tensor using half stored on CPU");  
-        }
-        T* tmpPtr = nullptr;
-        TryCudaTen(cudaMalloc((void**)&tmpPtr, this->size * sizeof(T)));
-        this->deviceData.reset(tmpPtr);
-        if constexpr(std::is_floating_point_v<U>){ //copied tensor is full, this is half
-          convertFloatToHalf(this->deviceData.get(), r.deviceData.get(), this->size);
-        }
-        else{ //converse
-          convertHalfToFloat(this->deviceData.get(), r.deviceData.get(), this->size);
-        }
-        this->hostData = nullptr;
-      }
+    else{
+      this->copy(r); //cross device transfer is as fast as deep copy, unless implemeneted page locking
     }
+    return *this;
+  }
+  //move assignment operator
+  template <typename U>
+  Tensor<T, ALLOC>& operator=(Tensor<U, ALLOC>&& r){
+    if(r.size <= 0){
+      throw std::runtime_error("Attemping to copy blank tensor");
+    }
+    this->copy(r);
+    return *this;
+  }
+
+  //default assignment operator
+  Tensor<T, ALLOC>& operator=(const Tensor<T, ALLOC>& r){
+    if(r.size <= 0){
+      throw std::runtime_error("Attemping to copy blank tensor");
+    }
+    this->copy(r);
+    return *this;
+  }
+
+  template <typename U, AllocationType A>
+  Tensor<T, ALLOC>& operator=(const Tensor<U, A>& r){
+    if(r.size <= 0){
+      throw std::runtime_error("Attemping to copy blank tensor");
+    }
+    this->copy(r);
+    return *this;
+  }
+  //conversion operator overload for TensorKey
+  operator TensorKey() const {
+    return TensorKey(*this);
+  }
+  //currently defunct, replaced by operator overloads
+  void gpuAdd(Tensor<T, ALLOC>& B){
+    if(this->size != B.size){
+      throw std::runtime_error("Different sizes for addition");
+    }
+    if(this->size <= 0){
+      throw std::runtime_error("Unpopulated tensor passed to operator overloard");
+    }
+
+    this->gpuSend(); //ensuring data is on GPU
+    B.gpuSend();
     
-    ~Tensor(){} //destructor
+    auto* aData = this->gpuData(); //retrieve data references
+    auto* bData = B.gpuData();
+    //kernel instantiation variables
+    int thrdCnt = 256; //threads per thread block
+    dim3 gridDim((this->size + thrdCnt - 1) / thrdCnt), blockDim(thrdCnt);
+    AddKernel<<<gridDim, blockDim, 0, *this->stream>>>(aData, bData, aData, this->size);
+    TryCudaTen(cudaDeviceSynchronize()); //templated kernel call
 
-    Tensor<T>& operator=(Tensor<T>&& r){
-      this->size = r.size;
-      this->device = r.device;
-      this->dimensions = r.dimensions;
-      this->n = r.n;
-      this->hostData.swap(r.hostData);
-      this->deviceData.swap(r.deviceData);
-      return *this;
+  }
+
+  //addition operator overload performs element-wise addition over the tensor matrices
+  Tensor<T, ALLOC> operator+(const Tensor<T, ALLOC>& rT) const{
+    if(this->size != rT.size){
+      throw std::runtime_error("Addition operator overload recieved incompatible tensors");
     }
-    //move assignment operator overload
-    template <typename U>
-    Tensor<T>& operator=(Tensor<U>&& r){
-      this->size = r.size;
-      this->dimensions = r.dimensions;
-      this->n = r.n;
-      this->device = r.device;
-
-      if constexpr(std::is_same_v<T, U>){ //checking if both tensors use the same templated data type, performs fast ptr swap if so
-        if(this == &r){
-          return *this; //preventing copying itself
-        }
-        this->hostData.swap(r.hostData);
-        this->deviceData.swap(r.deviceData);
-      }
-      //converting between data types will always require a deep copy
-      else{//if the templated data types differ, data type conversion is required
-        //so a move operation between data types is as slow as a regular deep copy
-        if(this->device == TensorLocation::CPU){
-          throw std::runtime_error("Half stored on CPU in assignment operator overload call");
-        }
-        T* tmpPtr = nullptr;
-        TryCudaTen(cudaMalloc((void**)&tmpPtr, this->size * sizeof(T)));
-        this->deviceData.reset(tmpPtr); 
-        if constexpr(std::is_floating_point_v<U>){ //copied tensor is full, this is half
-          convertFloatToHalf(this->deviceData.get(), r.deviceData.get(), this->size);
-        }
-        else{ //converse
-          convertHalfToFloat(this->deviceData.get(), r.deviceData.get(), this->size);
-        }
-        this->hostData = nullptr;
-      }
-      return *this;
+    if(this->device != rT.device){
+      throw std::runtime_error("Addition operator overload recieved tensors on seperate memory");
     }
-
-    Tensor<T>& operator=(Tensor<T>& r){
-      this->size = r.size;
-      this->dimensions = r.dimensions;
-      this->n = r.n;
-      this->device = r.device;
-      if(this->device == TensorLocation::GPU){
-        T* tmpPtr = nullptr;
-        TryCudaTen(cudaMalloc((void**)&tmpPtr, this->size * sizeof(T)));
-        this->deviceData.reset(tmpPtr);
-        TryCudaTen(cudaMemcpy(this->deviceData.get(), r.deviceData.get(), this->size * sizeof(T), cudaMemcpyDeviceToDevice));
-        this->hostData = nullptr;
-      }
-      else{
-        this->hostData = std::make_unique<T[]>(this->size);
-        memcpy(this->hostData.get(), r.hostData.get(), this->size * sizeof(T));
-        this->deviceData = nullptr;
-      }
-      return *this;
+    if(this->size <= 0){
+      throw std::runtime_error("Unpopulated tensor passed to operator overloard");
     }
-
-    template <typename U>
-    Tensor<T>& operator=(const Tensor<U>& r){
-      this->size = r.size;
-      this->dimensions = r.dimensions;
-      this->n = r.n;
-      this->device = r.device;
-      
-      if constexpr(std::is_same_v<T, U>){
-        if(this == &r){ //flag
-          return *this;
-        }
-        if(this->device == TensorLocation::GPU){
-          T* tmpPtr = nullptr;
-          TryCudaTen(cudaMalloc((void**)&tmpPtr, this->size * sizeof(T)));
-          this->deviceData.reset(tmpPtr);
-          TryCudaTen(cudaMemcpy(this->deviceData.get(), r.deviceData.get(), this->size * sizeof(T), cudaMemcpyDeviceToDevice));
-          this->hostData = nullptr;
-        }
-        else{
-          this->hostData = std::make_unique<T[]>(this->size);
-          memcpy(this->hostData.get(), r.hostData.get(), this->size * sizeof(T));
-          this->deviceData = nullptr;
-        }
+    Tensor<T, ALLOC> out(*this, this->device);
+    if(this->device == TensorLocation::CPU){
+      if constexpr(!std::is_floating_point_v<T>){
+        throw std::runtime_error("Half stored on CPU in addition overload"); //fix
       }
-      else{ //if different data types, allocates space then calls the correct coversion function
-        if(this->device == TensorLocation::CPU){
-          throw std::runtime_error("Half stored on CPU in assignment operator overload call");
-        }
-        T* tmpPtr = nullptr;
-        TryCudaTen(cudaMalloc((void**)&tmpPtr, this->size * sizeof(T)));
-        this->deviceData.reset(tmpPtr);
-        if constexpr(std::is_floating_point_v<U>){ //copied tensor is full, this is half
-          convertFloatToHalf(this->deviceData.get(), r.deviceData.get(), this->size);
-        }
-        else{ //converse
-          convertHalfToFloat(this->deviceData.get(), r.deviceData.get(), this->size);
-        }
-        this->hostData = nullptr;
+      auto* aData = this->hostData.get();
+      auto* bData = rT.hostData.get();
+      auto* outPtr = out.hostData.get();
+      for(int i = 0; i < this->size; i++){
+        outPtr[i] = aData[i] + bData[i];
       }
-      return *this;
     }
-        
-
-    void gpuAdd(Tensor<T>& B){
-      if(this->size != B.size){
-        throw std::runtime_error("Different sizes for addition");
-      }
-      if(this->size <= 0){
-        throw std::runtime_error("Unpopulated tensor passed to operator overloard");
-      }
-
-      this->gpuSend(); //ensuring data is on GPU
-      B.gpuSend();
-      
-      auto* aData = this->gpuData(); //retrieve data references
-      auto* bData = B.gpuData();
+    else{
+      auto* aData = this->deviceData.get();
+      auto* bData = rT.gpuData();
+      auto* outPtr = out.deviceData.get();
       //kernel instantiation variables
       int thrdCnt = 256; //threads per thread block
       dim3 gridDim((this->size + thrdCnt - 1) / thrdCnt), blockDim(thrdCnt);
-      AddKernel<<<gridDim, blockDim>>>(aData, bData, aData, this->size);
-      TryCudaTen(cudaDeviceSynchronize()); //templated kernel call
+      AddKernel<<<gridDim, blockDim, 0, *this->stream>>>(aData, bData, outPtr, this->size);
+      //TryCudaTen(cudaDeviceSynchronize()); //templated kernel call
+    }
+    return out;
+  }
+  //overloads += operator to perform element wise addition, tensors must have equal size
+  
+  Tensor<T, ALLOC>& operator+=(const Tensor<T, ALLOC>& rT){
+    if(this->size != rT.size){
+      throw std::runtime_error("Different sizes for addition assignment overload");
+    }
+    if(this->device != rT.device){
+      throw std::runtime_error("Addition assignment operator overload recieved tensors on seperate memory");
+    }
+    if(this->size <= 0){
+      throw std::runtime_error("Unpopulated tensor passed to operator overloard");
+    }
+    if(this->device == TensorLocation::CPU){
+      if constexpr(!std::is_floating_point_v<T>){ //clears out half check for CPU
+        throw std::runtime_error("Half stored on CPU in addition assignment overload");
+      }
+      auto* aData = this->hostData.get(); //reference pointers
+      auto* bData = rT.hostData.get();
+      for(int i = 0; i < this->size; i++){ //performs element-wise addition
+        aData[i] += bData[i];
+      }
+    }
+    else{
+      auto* aData = this->deviceData.get(); //reference pointers
+      auto* bData = rT.gpuData();
+      //kernel instantiation variables
+      int thrdCnt = 256; //threads per thread block
+      dim3 gridDim((this->size + thrdCnt - 1) / thrdCnt), blockDim(thrdCnt);
+      AddKernel<<<gridDim, blockDim, 0, *this->stream>>>(aData, bData, aData, this->size);
+      //TryCudaTen(cudaDeviceSynchronize()); //templated kernel call
+    }
+    return *this;
+  }
 
+  template <typename U>
+  Tensor<T, ALLOC>& operator+=(const Tensor<U, ALLOC>& rT){
+    if(this->size != rT.size){
+      throw std::runtime_error("Different sizes for addition assignment overload");
+    }
+    if(this->device != rT.device){
+      throw std::runtime_error("Addition assignment operator overload recieved tensors on seperate memory");
+    }
+    if(this->size <= 0){
+      throw std::runtime_error("Unpopulated tensor passed to operator overloard");
     }
 
-    //addition operator overload performs element-wise addition over the tensor matrices
-    Tensor<T> operator+(const Tensor<T>& rT) const {
-      if(this->size != rT.size){
-        throw std::runtime_error("Addition operator overload recieved incompatible tensors");
-      }
-      if(this->device != rT.device){
-        throw std::runtime_error("Addition operator overload recieved tensors on seperate memory");
-      }
-      if(this->size <= 0){
-        throw std::runtime_error("Unpopulated tensor passed to operator overloard");
-      }
-      Tensor<T> out(this->dimensions, this->device, this->n);
-      if(this->device == TensorLocation::CPU){
-        if constexpr(!std::is_floating_point_v<T>){
-          throw std::runtime_error("Half stored on CPU in addition overload");
-        }
-        auto* aData = this->hostData.get();
-        auto* bData = rT.hostData.get();
-        auto* outPtr = out.hostData.get();
-        for(int i = 0; i < this->size; i++){
-          outPtr[i] = aData[i] + bData[i];
-        }
-      }
-      else{
-        auto* aData = this->deviceData.get();
-        auto* bData = rT.gpuData();
-        auto* outPtr = out.deviceData.get();
-        //kernel instantiation variables
-        int thrdCnt = 256; //threads per thread block
-        dim3 gridDim((this->size + thrdCnt - 1) / thrdCnt), blockDim(thrdCnt);
-        AddKernel<<<gridDim, blockDim>>>(aData, bData, outPtr, this->size);
-        TryCudaTen(cudaDeviceSynchronize()); //templated kernel call
-      }
-      return out;
-    }
-    //overloads += operator to perform element wise addition, tensors must have equal size
-    
-    Tensor<T>& operator+=(const Tensor<T>& rT){
-      if(this->size != rT.size){
-        throw std::runtime_error("Different sizes for addition assignment overload");
-      }
-      if(this->device != rT.device){
-        throw std::runtime_error("Addition assignment operator overload recieved tensors on seperate memory");
-      }
-      if(this->size <= 0){
-        throw std::runtime_error("Unpopulated tensor passed to operator overloard");
-      }
+    if constexpr(std::is_same_v<T, U>){
       if(this->device == TensorLocation::CPU){
         if constexpr(!std::is_floating_point_v<T>){ //clears out half check for CPU
           throw std::runtime_error("Half stored on CPU in addition assignment overload");
@@ -495,345 +516,314 @@ public:
         //kernel instantiation variables
         int thrdCnt = 256; //threads per thread block
         dim3 gridDim((this->size + thrdCnt - 1) / thrdCnt), blockDim(thrdCnt);
-        AddKernel<<<gridDim, blockDim>>>(aData, bData, aData, this->size);
-        TryCudaTen(cudaDeviceSynchronize()); //templated kernel call
+        AddKernel<<<gridDim, blockDim, 0, *this->stream>>>(aData, bData, aData, this->size);
       }
-      return *this;
     }
-
-    template <typename U>
-    Tensor<T>& operator+=(const Tensor<U>& rT){
-      if(this->size != rT.size){
-        throw std::runtime_error("Different sizes for addition assignment overload");
-      }
-      if(this->device != rT.device){
-        throw std::runtime_error("Addition assignment operator overload recieved tensors on seperate memory");
-      }
-      if(this->size <= 0){
-        throw std::runtime_error("Unpopulated tensor passed to operator overloard");
-      }
-
-      if constexpr(std::is_same_v<T, U>){
+    else{
         if(this->device == TensorLocation::CPU){
-          if constexpr(!std::is_floating_point_v<T>){ //clears out half check for CPU
-            throw std::runtime_error("Half stored on CPU in addition assignment overload");
-          }
-          auto* aData = this->hostData.get(); //reference pointers
-          auto* bData = rT.hostData.get();
-          for(int i = 0; i < this->size; i++){ //performs element-wise addition
-            aData[i] += bData[i];
-          }
+          throw std::runtime_error("Half stored on CPU in addition assignment overload");
         }
-        else{
-          auto* aData = this->deviceData.get(); //reference pointers
-          auto* bData = rT.gpuData();
-          //kernel instantiation variables
-          int thrdCnt = 256; //threads per thread block
-          dim3 gridDim((this->size + thrdCnt - 1) / thrdCnt), blockDim(thrdCnt);
-          AddKernel<<<gridDim, blockDim>>>(aData, bData, aData, this->size);
-          TryCudaTen(cudaDeviceSynchronize()); //templated kernel call
-        }
-      }
-      else{
-          if(this->device == TensorLocation::CPU){
-            throw std::runtime_error("Half stored on CPU in addition assignment overload");
-          }
-          auto* aData = this->deviceData.get(); //reference pointers
-          auto* bData = rT.gpuData();
-          //kernel instantiation variables
-          int thrdCnt = 256; //threads per thread block
-          dim3 gridDim((this->size + thrdCnt - 1) / thrdCnt), blockDim(thrdCnt);
-          AddKernel<<<gridDim, blockDim>>>(aData, bData, aData, this->size);
-          TryCudaTen(cudaDeviceSynchronize()); //templated kernel call
-      }
-      return *this;
+        auto* aData = this->deviceData.get(); //reference pointers
+        auto* bData = rT.gpuData();
+        //kernel instantiation variables
+        int thrdCnt = 256; //threads per thread block
+        dim3 gridDim((this->size + thrdCnt - 1) / thrdCnt), blockDim(thrdCnt);
+        AddKernel<<<gridDim, blockDim, 0, *this->stream>>>(aData, bData, aData, this->size);
+    }
+    return *this;
+  }
+
+  //takes set of tensors and copies them into one larger tensor on page-locked CPU memory
+  //requires the tensor was set as PageLocked and is currently set to the CPU memory
+  //the gpu can read and write to the batch very quickly 
+  void batchBuild(const std::vector<Tensor<T, ALLOC>>& tensorBatch){
+    if(this->device == TensorLocation::GPU){
+      throw std::runtime_error("Main batching tensor must be in CPU memory");
+    }
+    if(tensorBatch.empty()){
+      throw std::runtime_error("Set of passed tensors to batch empty");
     }
 
-    template <typename U>
-    std::enable_if_t<std::is_same_v<T, U>, void>
-    batchBuild(const std::vector<Tensor<U>>& tensorBatch, const TensorLocation loc = TensorLocation::CPU){
-      if(tensorBatch.empty()){
-        throw std::runtime_error("Set of passed tensors to batch empty");
-      }
+    if(this->dimensions[0] != tensorBatch.size()){ //skip if batch tensor is already configured for the batch
+      this->deallocate(); //resets to get greater size
       this->n = 4; //setting basic members
       this->dimensions = tensorBatch[0].dimensions;
       this->dimensions[0] = tensorBatch.size();
-      this->device = loc;
       this->size = tensorBatch[0].size;
-      const int gap = this->size; //the number of elements per tensor being batched
       this->size *= tensorBatch.size();
-      int offset = 0; //"this" ptr offset value
-      if(loc == TensorLocation::CPU){
-        if constexpr(!std::is_floating_point_v<T>){
-          throw std::runtime_error("Half stored on CPU in batchBuild");
-        }
-        this->hostData = std::make_unique<T[]>(this->size);
-        T* refPtr = this->hostData.get();
-        for(auto& tRef : tensorBatch){ //performs memcpy over every tensor in the set, uses int offset to move the starting location to the first unused element
-          if(tRef.size != gap){
-            throw std::runtime_error("Tensor batch contains differently sized tensors");
-          }
-          memcpy(refPtr + offset, tRef.hostData.get(), gap * sizeof(T));
-          offset += gap; //incrememnts the offset by however many elements were added
-        }
+      this->allocate();
+    }
+    
+    const int gap = tensorBatch[0].size; //the number of elements per tensor being batched
+    int offset = 0; //"this" ptr offset value
+    T* refPtr = this->hostData.get();
+    for(auto& tRef : tensorBatch){
+      if(tRef.size != gap){
+        throw std::runtime_error("Tensor batch contains differently sized tensors");
+      }
+      if(tRef.device != TensorLocation::CPU){
+        throw std::runtime_error("All tensors in batch build must be on the CPU");
+      }
+      memcpy(refPtr + offset, tRef.hostData.get(), gap * sizeof(T));
+      offset += gap; //incrememnts the offset by however many elements were added
+    }
+    
+  }
+  //takes a section of the tensor from the batches at the specified index
+  //rework to use a special struct that holds a view and a shared ptr and can be converted back into a tensor
+  Tensor<T, ALLOC> segment(const int n_i){
+    if(n_i < 0 || n_i >= this->dimensions[0]){
+      throw std::runtime_error("Bad batch index to copy");
+    }
+    std::vector<int> segDim = this->dimensions; //each tensor in a batch has the same dimensions with the dimensions[0] always being a tensors batch size
+    segDim[0] = 1;
+    Tensor<T, ALLOC> outTensor(segDim, this->device, this->n, this->stream.get());
+    int offset = n_i * outTensor.size; //marks offset of desired tensor
+    if(this->device == TensorLocation::CPU){
+      if constexpr(!std::is_floating_point_v<T>){
+        throw std::runtime_error("Half stored on CPU in segment");
+      }
+      memcpy(outTensor.hostData.get(), this->hostData.get() + offset, outTensor.size * sizeof(T));
+    }
+    else if constexpr(ALLOC == AllocationType::FIXED){
+      TryCudaTen(cudaMemcpy(outTensor.gpuData(), this->deviceData.get() + offset, outTensor.size * sizeof(T), cudaMemcpyDeviceToDevice));
+    }
+    else{
+      TryCudaTen(cudaMemcpyAsync(outTensor.gpuData(), this->deviceData.get() + offset, outTensor.size * sizeof(T), cudaMemcpyDeviceToDevice, *this->stream));
+    }
+    return outTensor;
+  }
+  //returns the value stored at the specified set of indices
+  T at(std::vector<int> ind){
+    int indice = 0, mult = 1;
+    for(int i = ind.size() - 1; i >= 0; i--){
+      if(ind[i] >= this->dimensions[i] || ind[i] < 0){ //ensuring indices are all positive in bound values
+        throw std::out_of_range("Indice array contains invalid index value");
+      }
+      indice += ind[i] * mult;
+      mult *= this->dimensions[i];
+    }
+    if(this->device == TensorLocation::CPU){
+      return this->hostData.get()[indice];
+    }
+    else{
+      T val;
+      TryCudaTen(cudaMemcpy(&val, this->deviceData.get() + indice, sizeof(T), cudaMemcpyDeviceToHost));
+      return val;
+    }
+
+  }
+  //returns the value stored at the specified 4 dimensional index
+  T at(int n, int h, int w, int c){
+    if(this->n != 4){
+      throw std::runtime_error("Non 4-dimensional tensor tried 4-dimensional indexing");
+    }
+    return this->at({n, h, w, c});
+  }
+  //returns the value stored at the specified 2 dimensional index
+  T at(int n, int c){
+    if(this->n != 2){
+      throw std::runtime_error("Non 2-dimensional tensor tried 2-dimensional indexing");
+    }
+    return this->at({n, 1, 1, c});
+  }
+  //returns the value stored at the specified 1 dimensional index
+  T at(int i){
+    if(i >= this->size || i < 0){
+      throw std::out_of_range("Invalid single index given");
+    }
+    if(this->device == TensorLocation::CPU){
+      return this->hostData.get()[i];
+    }
+    else{
+      T val;
+      TryCudaTen(cudaMemcpy(&val, this->deviceData.get() + i, sizeof(T), cudaMemcpyDeviceToHost));
+      return val;
+    }
+  }
+  
+  //takes a pointer to a tensor descriptor and sets it based on the calling tensors data
+  void genDescriptor(cudnnTensorDescriptor_t* dsc){
+    if(this->size <= 0){
+      throw std::runtime_error("Empty tensor generating descriptor");
+    }
+
+    TensorKey key(*this);
+    if(descriptors.find(key) == descriptors.end()){ //if a descriptor for this specific tensor config hasn't been made one is and is cached in the map
+      descriptors[key]; //initializing value at key index safely
+      cudnnDataType_t dataType;
+      if constexpr(std::is_same_v<T, float>){
+        dataType = CUDNN_DATA_FLOAT;
+      }
+      else if constexpr(std::is_same_v<T, __half>){
+        dataType = CUDNN_DATA_HALF;
       }
       else{
+        dataType = CUDNN_DATA_INT8;
+      }
+      TryCudaTen(cudnnCreateTensorDescriptor(&descriptors[key]));
+      TryCudaTen(cudnnSetTensor4dDescriptor(descriptors[key], CUDNN_TENSOR_NHWC, dataType, this->dimensions[0], this->dimensions[3], this->dimensions[1], this->dimensions[2]));
+    }
+    dsc = &descriptors[key]; //sets to reference appropriate descriptor
+  }
+
+  //modifies the shape of the matrix to a new set of dimensions that must be the same size as the previous, only modifies dimensions and n
+  void reshape(const std::vector<int>& dim, const int nth){
+    if(dim.size() != 4 || nth <= 0 || nth > 4){
+      throw std::runtime_error("Invalid reshape dimension values passed");
+    }
+    int sz = 1;
+    for(auto x : dim){
+      if(x <= 0){
+        throw std::runtime_error("Non-positive dimension passed on reshape");
+      }
+      sz *= x;
+    }
+    if(sz != this->size){ //reshape must maintain size
+      throw std::runtime_error("Different reshape size");
+    }
+    this->dimensions = dim;
+    this->n = nth;
+  }
+  //sends data to cpu from gpu, only usable when T is float
+  template <typename U = T>
+  std::enable_if_t<std::is_floating_point_v<U>, void> //enabled if templated type is float
+  cpuSend(){
+    if(this->device == TensorLocation::CPU){ //skips
+      std::cout<<"Data already stored on CPU"<<std::endl;
+      return;
+    }
+    if(this->deviceData == nullptr){
+      throw std::runtime_error("Sending unallocated data");
+    }
+    
+    if constexpr(ALLOC == AllocationType::FIXED){
+      this->hostData.reset(new T[this->size]);
+      TryCudaTen(cudaMemcpy(this->hostData.get(), this->deviceData.get(), this->getMemUsage(), cudaMemcpyDeviceToHost));
+      this->deviceData = nullptr;
+      totalDeviceMemAllocation.fetch_sub(this->getMemUsage(), std::memory_order_relaxed);
+    }
+    else{
+      if(this->hostData == nullptr){ //consider leaving dynamic tensors cpu memory allocated, but this would probably require setting up memory pooling
         T* tmpPtr = nullptr;
-        TryCudaTen(cudaMalloc((void**)&tmpPtr, this->size * sizeof(T)));
-        this->deviceData.reset(tmpPtr);
-        tmpPtr = this->deviceData.get();
-        for(auto& tRef : tensorBatch){ //performs cudaMemcpy over every tensor in the set, uses int offset to move the starting location to the first unused element
-          if(tRef.size != gap){
-            throw std::runtime_error("Tensor batch contains differently sized tensors");
-          }
-          TryCudaTen(cudaMemcpy(tmpPtr + offset, tRef.gpuData(), gap * sizeof(T), cudaMemcpyDeviceToDevice));
-          offset += gap;//incrememnts the offset by however many elements were added
-        }
+        TryCudaTen(cudaHostAlloc((void**)&tmpPtr, this->getMemUsage(), 0));
+        this->hostData.reset(tmpPtr);
       }
+      TryCudaTen(cudaMemcpyAsync(this->hostData.get(), this->deviceData.get(), this->getMemUsage(), cudaMemcpyDeviceToHost, *this->stream));
+      this->deviceData = nullptr;
+      totalDeviceMemAllocation.fetch_sub(this->getMemUsage(), std::memory_order_relaxed);
+      totalHostMemAllocation.fetch_add(this->getMemUsage(), std::memory_order_relaxed);
+    }
+  }
+
+  //sends data to gpu from cpu
+  template <typename U = T>
+  std::enable_if_t<std::is_floating_point_v<U>, void> //enabled if templated type is float
+  gpuSend(){
+    if(this->device == TensorLocation::GPU){
+      std::cout<<"Data already stored on GPU"<<std::endl;
+      return;
+    }
+    if(this->hostData == nullptr){
+      throw std::runtime_error("Sending unallocated data");
     }
 
-    Tensor<T> segment(const int n_i){
-      if(n_i < 0 || n_i >= this->dimensions[0]){
-        throw std::runtime_error("Bad batch index to copy");
-      }
-      std::vector<int> segDim = this->dimensions; //each tensor in a batch has the same dimensions with the dimensions[0] always being a tensors batch size
-      segDim[0] = 1;
-      Tensor<T> outTensor(segDim, this->device, this->n);
-      int offset = n_i * outTensor.size; //marks offset of desired tensor
-      if(this->device == TensorLocation::CPU){
-        if constexpr(!std::is_floating_point_v<T>){
-          throw std::runtime_error("Half stored on CPU in segment");
-        }
-        memcpy(outTensor.hostData.get(), this->hostData.get() + offset, outTensor.size * sizeof(T));
-      }
-      else{
-        TryCudaTen(cudaMemcpy(outTensor.gpuData(), this->deviceData.get() + offset, outTensor.size * sizeof(T), cudaMemcpyDeviceToDevice));
-      }
-      return outTensor;
-    }
-    //takes cuda half pointer set and converts the values to float and stores it in dst
-    void convertHalfToFloat(float* dst, const __half* src, int size){
-      const int thCount = 256, blocks = (this->size + thCount - 1) / thCount; //floors
-      dim3 blockDim(thCount), gridDim(blocks);
-      HalfToFullKernel<<<gridDim, blockDim>>>(dst, src, size);
-      cudaDeviceSynchronize();
-    }
-    //takes float pointer set and converts the values to cuda half and stores it in dst
-    void convertFloatToHalf(__half* dst, const float* src, int size){
-      const int thCount = 256, blocks = (this->size + thCount - 1) / thCount; //floors
-      dim3 blockDim(thCount), gridDim(blocks);
-      FullToHalfKernel<<<gridDim, blockDim>>>(dst, src, size);
-      cudaDeviceSynchronize();
-    }
-
-    //returns the value stored at the specified set of indices
-    T at(std::vector<int> ind){
-      int indice = 0, mult = 1;
-      for(int i = ind.size() - 1; i >= 0; i--){
-        if(ind[i] >= this->dimensions[i] || ind[i] < 0){ //ensuring indices are all positive in bound values
-          throw std::out_of_range("Indice array contains invalid index value");
-        }
-        indice += ind[i] * mult;
-        mult *= this->dimensions[i];
-      }
-      if(this->device == TensorLocation::CPU){
-        return this->hostData[indice];
-      }
-      else{
-        T val;
-        TryCudaTen(cudaMemcpy(&val, this->deviceData.get() + indice, sizeof(T), cudaMemcpyDeviceToHost));
-        return val;
-      }
-
-    }
-    //returns the value stored at the specified 4 dimensional index
-    T at(int n, int h, int w, int c){
-      if(this->n != 4){
-        throw std::runtime_error("Non 4-dimensional tensor tried 4-dimensional indexing");
-      }
-      return this->at({n, h, w, c});
-    }
-    //returns the value stored at the specified 2 dimensional index
-    T at(int n, int c){
-      if(this->n != 2){
-        throw std::runtime_error("Non 2-dimensional tensor tried 2-dimensional indexing");
-      }
-      return this->at({n, 1, 1, c});
-    }
-    //returns the value stored at the specified 1 dimensional index
-    T at(int i){
-      if(i >= this->size || i < 0){
-        throw std::out_of_range("Invalid single index given");
-      }
-      if(this->device == TensorLocation::CPU){
-        return this->hostData[i];
-      }
-      else{
-        T val;
-        TryCudaTen(cudaMemcpy(&val, this->deviceData.get() + i, sizeof(T), cudaMemcpyDeviceToHost));
-        return val;
-      }
-    }
-    
-    //takes a pointer to a tensor descriptor and sets it based on the calling tensors data
-    void genDescriptor(cudnnTensorDescriptor_t* dsc){
-      if(this->size <= 0){
-        throw std::runtime_error("Empty tensor generating descriptor");
-      }
-      if constexpr(std::is_floating_point_v<T>){
-        TryCudaTen(cudnnSetTensor4dDescriptor(*dsc, CUDNN_TENSOR_NHWC, CUDNN_DATA_FLOAT, this->dimensions[0], this->dimensions[3], this->dimensions[1], this->dimensions[2]));
-      }
-      else{
-        TryCudaTen(cudnnSetTensor4dDescriptor(*dsc, CUDNN_TENSOR_NHWC, CUDNN_DATA_HALF, this->dimensions[0], this->dimensions[3], this->dimensions[1], this->dimensions[2]));  
-      }
-    }
-
-    template <typename U = T>
-    std::enable_if_t<std::is_same_v<U, __half>, void>
-    genDescriptor(cudnnFilterDescriptor_t* dsc){
-      if(this->size <= 0){
-        throw std::runtime_error("Empty tensor generating descriptor");
-      }
-      TryCudaTen(cudnnSetFilter4dDescriptor(*dsc, CUDNN_DATA_HALF, CUDNN_TENSOR_NHWC, this->dimensions[0], this->dimensions[3], this->dimensions[1], this->dimensions[2]));
-    }
-
-    //modifies the shape of the matrix to a new set of dimensions that must be the same size as the previous, only modifies dimensions and n
-    void reshape(const std::vector<int>& dim, const int nth){
-      if(dim.size() != 4 || nth <= 0 || nth > 4){
-        throw std::runtime_error("Invalid reshape dimension values passed");
-      }
-      int sz = 1;
-      for(auto x : dim){
-        if(x <= 0){
-          throw std::runtime_error("Non-positive dimension passed on reshape");
-        }
-        sz *= x;
-      }
-      if(sz != this->size){ //reshape must maintain size
-        throw std::runtime_error("Different reshape size");
-      }
-      this->dimensions = dim;
-      this->n = nth;
-    }
-    //sends data to cpu from gpu, only usable when T is float
-    template <typename U = T>
-    std::enable_if_t<std::is_floating_point_v<U>, void> //enabled if templated type is float
-    cpuSend(){
-      if(this->device == TensorLocation::CPU){ //skips
-        std::cout<<"Data already stored on CPU"<<std::endl;
-        return;
-      }
-      if(this->deviceData == nullptr){
-        throw std::runtime_error("Sending unallocated data");
-      }
-      this->hostData = std::make_unique<T[]>(this->size); //allocating host memory
-      TryCudaTen(cudaMemcpy(this->hostData.get(), this->deviceData.get(), this->size * sizeof(T), cudaMemcpyDeviceToHost)); //copies to host
-      this->deviceData.reset(); //frees the old data
-      this->device = TensorLocation::CPU;
-    }
-
-    //sends data to gpu from cpu
-    template <typename U = T>
-    std::enable_if_t<std::is_floating_point_v<U>, void> //enabled if templated type is float
-    gpuSend(){
-      if(this->device == TensorLocation::GPU){
-        std::cout<<"Data already stored on GPU"<<std::endl;
-        return;
-      }
-      if(this->hostData == nullptr){
-        throw std::runtime_error("Sending unallocated data");
-      }
+    if constexpr(ALLOC == AllocationType::FIXED){
       T* tmpPtr = nullptr;
-      TryCudaTen(cudaMalloc((void**)&tmpPtr, this->size * sizeof(T)));
+      TryCudaTen(cudaMalloc((void**)&tmpPtr, this->getMemUsage()));
+      TryCudaTen(cudaMemcpy(tmpPtr, this->hostData.get(), this->getMemUsage(), cudaMemcpyHostToDevice));
       this->deviceData.reset(tmpPtr);
-      TryCudaTen(cudaMemcpy(this->deviceData.get(), this->hostData.get(), this->size * sizeof(T), cudaMemcpyHostToDevice));
-      this->device = TensorLocation::GPU;
+      this->hostData = nullptr;
+      totalDeviceMemAllocation.fetch_add(this->getMemUsage());
+    }
+    else{ //consider leaving dynamic tensors cpu memory allocated, but this would probably require setting up memory pooling
+      T* tmpPtr = nullptr;
+      TryCudaTen(cudaMallocAsync((void**)&tmpPtr, this->getMemUsage(), *this->stream));
+      TryCudaTen(cudaMemcpyAsync(tmpPtr, this->hostData.get(), this->getMemUsage(), cudaMemcpyHostToDevice, *this->stream));
+      this->deviceData.reset(tmpPtr);
+      this->hostData = nullptr;
+      totalDeviceMemAllocation.fetch_add(this->getMemUsage());
+      totalHostMemAllocation.fetch_sub(this->getMemUsage());
+    }
+    this->device = TensorLocation::GPU;
+  }
+
+  //returns a raw ptr to the data in cpu memory
+  template <typename U = T>
+  std::enable_if_t<std::is_same_v<U, float>, float*>
+  cpuData() const{
+    if(this->device != TensorLocation::CPU){
+      throw std::runtime_error("Tensor not stored on CPU");
+    }
+    return this->hostData.get();
+  }
+  
+  //returns a raw ptr to the data in gpu memory
+  T* gpuData() const{
+    if(this->device != TensorLocation::GPU){
+      throw std::runtime_error("Tensor not stored on GPU");
+    }
+    return this->deviceData.get();
+  }
+
+  //file interactions for saving and restoring tensors
+  //extracts tensor information from a binary input, expects the current position to start at the tensors data, extracting from files must be precise
+  template <typename U = T>
+  void readBinary(std::ifstream& iF){
+    if(!iF.is_open()){
+      std::cout<<"File not open to read"<<std::endl;
+      return;
+    }
+    if(!std::is_floating_point_v<T>){ //has to read as float then convert to half, assignment operator handles type conversion
+      Tensor<float> ten = *this;
+      ten.cpuSend();
+      ten.deviceData = nullptr; //clearing existing data
+      ten.hostData = nullptr;
+      ten.dimensions = std::vector<int>(4); 
+      ten.device = TensorLocation::CPU;
+      iF.read(reinterpret_cast<char*>(&ten.size), sizeof(int)); //reading data from file
+      ten.hostData.reset(new T[ten.size]); //allocate with new size
+      iF.read(reinterpret_cast<char*>(&ten.n), sizeof(int));
+      iF.read(reinterpret_cast<char*>(ten.dimensions.data()), 4 * sizeof(int));
+      iF.read(reinterpret_cast<char*>(ten.hostData.get()), ten.size * sizeof(float));
+      ten.gpuSend();
+      *this = ten;
+    }
+    else{  
+      this->deviceData = nullptr; //clearing existing data
+      this->hostData = nullptr;
+      this->dimensions = std::vector<int>(4); 
+      this->device = TensorLocation::CPU;
+      iF.read(reinterpret_cast<char*>(&this->size), sizeof(int)); //reading data from file
+      this->hostData.reset(new T[this->size]); //allocate with new size
+      iF.read(reinterpret_cast<char*>(&this->n), sizeof(int));
+      iF.read(reinterpret_cast<char*>(this->dimensions.data()), 4 * sizeof(int));
+      iF.read(reinterpret_cast<char*>(this->hostData.get()), this->size * sizeof(float));
+    }
+  }
+  //writes the tensors into binary assuming a binary output file, writes to wherever the output stream is so sequential tensor writes to the same open file can be read sequentially later
+  template <typename U = T>
+  void writeBinary(std::ofstream& oF){
+    if(!oF.is_open()){
+      std::cout<<"Output not open"<<std::endl;
+      return;
+    }
+    if(this->size <= 0){
+      std::cout<<"Tensor not allocated"<<std::endl;
+      return;
     }
 
-    //returns a raw ptr to the data in cpu memory
-    template <typename U = T>
-    std::enable_if_t<std::is_same_v<U, float>, float*>
-    cpuData() const{
-      if(this->device != TensorLocation::CPU){
-        throw std::runtime_error("Tensor not stored on CPU");
-      }
-      return this->hostData.get();
+    if(!std::is_floating_point_v<T>){
+      Tensor<float> ten = *this;
+      ten.cpuSend();
+      oF.write(reinterpret_cast<const char*>(&ten.size), sizeof(int)); //writing to file
+      oF.write(reinterpret_cast<const char*>(&ten.n), sizeof(int));
+      oF.write(reinterpret_cast<const char*>(ten.dimensions.data()), 4 * sizeof(int));
+      oF.write(reinterpret_cast<const char*>(ten.hostData.get()), ten.size * sizeof(float));
+      ten.gpuSend();
+      *this = ten;
     }
-    
-    //returns a raw ptr to the data in gpu memory
-    T* gpuData() const{
-      if(this->device != TensorLocation::GPU){
-        throw std::runtime_error("Tensor not stored on GPU");
-      }
-      return this->deviceData.get();
-    }
-    
-    //file interactions for saving and restoring tensors
-    //extracts tensor information from a binary input, expects the current position to start at the tensors data, extracting from files must be precise
-    template <typename U = T>
-    void readBinary(std::ifstream& iF){
-      if(!iF.is_open()){
-        std::cout<<"File not open to read"<<std::endl;
-        return;
-      }
-      if(!std::is_floating_point_v<T>){ //has to read as float then convert to half, assignment operator handles type conversion
-        Tensor<float> ten = *this;
-        ten.cpuSend();
-        ten.deviceData = nullptr; //clearing existing data
-        ten.hostData = nullptr;
-        ten.dimensions = std::vector<int>(4); 
-        ten.device = TensorLocation::CPU;
-        iF.read(reinterpret_cast<char*>(&ten.size), sizeof(int)); //reading data from file
-        ten.hostData = std::make_unique<T[]>(ten.size); //allocate with new size
-        iF.read(reinterpret_cast<char*>(&ten.n), sizeof(int));
-        iF.read(reinterpret_cast<char*>(ten.dimensions.data()), 4 * sizeof(int));
-        iF.read(reinterpret_cast<char*>(ten.hostData.get()), ten.size * sizeof(float));
-        ten.gpuSend();
-        *this = ten;
-      }
-      else{  
-        this->deviceData = nullptr; //clearing existing data
-        this->hostData = nullptr;
-        this->dimensions = std::vector<int>(4); 
-        this->device = TensorLocation::CPU;
-        iF.read(reinterpret_cast<char*>(&this->size), sizeof(int)); //reading data from file
-        this->hostData = std::make_unique<T[]>(this->size); //allocate with new size
-        iF.read(reinterpret_cast<char*>(&this->n), sizeof(int));
-        iF.read(reinterpret_cast<char*>(this->dimensions.data()), 4 * sizeof(int));
-        iF.read(reinterpret_cast<char*>(this->hostData.get()), this->size * sizeof(float));
-      }
-    }
-    //writes the tensors into binary assuming a binary output file, writes to wherever the output stream is so sequential tensor writes to the same open file can be read sequentially later
-    template <typename U = T>
-    void writeBinary(std::ofstream& oF){
-      if(!oF.is_open()){
-        std::cout<<"Output not open"<<std::endl;
-        return;
-      }
-      if(this->size <= 0){
-        std::cout<<"Tensor not allocated"<<std::endl;
-        return;
-      }
-
-      if(!std::is_floating_point_v<T>){
-        Tensor<float> ten = *this;
-        ten.cpuSend();
-        oF.write(reinterpret_cast<const char*>(&ten.size), sizeof(int)); //writing to file
-        oF.write(reinterpret_cast<const char*>(&ten.n), sizeof(int));
-        oF.write(reinterpret_cast<const char*>(ten.dimensions.data()), 4 * sizeof(int));
-        oF.write(reinterpret_cast<const char*>(ten.hostData.get()), ten.size * sizeof(float));
-        ten.gpuSend();
-        *this = ten;
-      }
-      else{
-        if(this->device == TensorLocation::GPU){
-          this->cpuSend();
-        }
-        oF.write(reinterpret_cast<const char*>(&this->size), sizeof(int)); //writing to file
-        oF.write(reinterpret_cast<const char*>(&this->n), sizeof(int));
-        oF.write(reinterpret_cast<const char*>(this->dimensions.data()), 4 * sizeof(int));
-        oF.write(reinterpret_cast<const char*>(this->hostData.get()), this->size * sizeof(float));
-      }
+    else{
       if(this->device == TensorLocation::GPU){
         this->cpuSend();
       }
@@ -842,50 +832,213 @@ public:
       oF.write(reinterpret_cast<const char*>(this->dimensions.data()), 4 * sizeof(int));
       oF.write(reinterpret_cast<const char*>(this->hostData.get()), this->size * sizeof(float));
     }
-    //clean write for readability, converts all 2 or greater dimensional tensors to 2d for the display
-    template <typename U = T>
-    std::enable_if_t<std::is_floating_point_v<U>, void>
-    writeTensor(std::ofstream& oF){
-      int width = 16, precision = 14;
-      if(!oF.is_open()){
-        std::cout<<"Output stream not open"<<std::endl;
-        return;
-      }
-      if(this->size <= 0){
-        std::cout<<"Tensor not allocated"<<std::endl;
-        return;
-      }
-      if(this->device == TensorLocation::GPU){
-        this->cpuSend();
-      }
-      oF << std::to_string(this->n) << "-dimensional tensor " << this->dimensions[0];
-      for(int i = 1; i < this->n; i++){
-        oF << " x " << this->dimensions[i];
-      }
-      oF << "\n";
-      int x = this->dimensions[0], y = this->size / x;
-      for(int i = 0; i < x; i++){
-        for(int j = 0; j < y; j++){
-          std::string value = formatFloat(this->hostData.get()[i*y + j], width, precision);
-          oF << value << " ";
-        }
-        oF << "\n";
+    if(this->device == TensorLocation::GPU){
+      this->cpuSend();
+    }
+  }
+  //clean write for readability, converts all 2 or greater dimensional tensors to 2d for the display
+  template <typename U = T>
+  std::enable_if_t<std::is_floating_point_v<U>, void>
+  writeTensor(std::ofstream& oF){
+    int width = 16, precision = 14;
+    if(!oF.is_open()){
+      std::cout<<"Output stream not open"<<std::endl;
+      return;
+    }
+    if(this->size <= 0){
+      std::cout<<"Tensor not allocated"<<std::endl;
+      return;
+    }
+    if(this->device == TensorLocation::GPU){
+      this->cpuSend();
+    }
+    oF << std::to_string(this->n) << "-dimensional tensor " << this->dimensions[0];
+    for(int i = 1; i < this->n; i++){
+      oF << " x " << this->dimensions[i];
+    }
+    oF << "\n";
+    int x = this->dimensions[0], y = this->size / x;
+    for(int i = 0; i < x; i++){
+      for(int j = 0; j < y; j++){
+        std::string value = formatFloat(this->hostData.get()[i*y + j], width, precision);
+        oF << value << " ";
       }
       oF << "\n";
     }
+    oF << "\n";
+  }
 
-    //public member variables
-    int size; //total number of elements and the highest order dimension
-    int n; //nD tensor
-    std::vector<int> dimensions; //dimension sizes
-    //std::unique_ptr<T> data;
-    std::unique_ptr<T[]> hostData;
-    std::unique_ptr<T, CudaDeleter<T>> deviceData;
-    //enum to designate the CPU and GPU
-    TensorLocation device;
+  //returns the size of data in bits
+  size_t getMemUsage(){
+    if(this->size <= 0){
+      return 0;
+    }
+    return sizeof(T) * this->size;
+  }
+
+  //public member variables
+  int size; //total number of elements and the highest order dimension
+  int n; //nD tensor
+  std::vector<int> dimensions; //dimension sizes
+  //std::unique_ptr<T> data;
+  std::unique_ptr<T[], HostDeleter<T, ALLOC>> hostData;
+  std::unique_ptr<T, CudaDeleter<T, ALLOC>> deviceData;
+  //enum to designate the CPU and GPU
+  TensorLocation device;
+  std::shared_ptr<cudaStream_t> stream; 
+  //cudaStream_t* stream; //stream reference if this tensor uses dynamic allocation
+  //static std::map<double, cudnnTensorDescriptor_t> descriptors;
+  
+  //static std::atomic<size_t> totalDeviceMemAllocation;
+  //static std::atomic<size_t> totalHostMemAllocation;
 
 private:
+  //helper functions for allocating and deallocating memory space to ensure consistent tracking of size globals
+  void allocate(){
+    size_t s = this->size * sizeof(T);
+    if(s <= 0){
+      throw std::invalid_argument("Allocating with non-positive size");
+    }
+
+    this->deallocate(); //ensures proper data updates
     
+    if constexpr(ALLOC == AllocationType::FIXED){
+      if(this->device == TensorLocation::CPU){
+        this->hostData.reset(new T[this->size]);
+        //this->totalHostMemAllocation.fetch_add(s, std::memory_order_relaxed);  
+      }
+      else{
+        T* tmpPtr = nullptr;
+        TryCudaTen(cudaMalloc((void**)&tmpPtr, s));
+        this->deviceData.reset(tmpPtr);
+        this->totalDeviceMemAllocation.fetch_add(s, std::memory_order_relaxed);  
+      }
+    }
+    else{
+      if(this->device == TensorLocation::CPU){
+        T* tmpPtr = nullptr;
+        TryCudaTen(cudaHostAlloc((void**)&tmpPtr, s, 0));
+        this->hostData.reset(tmpPtr);
+        this->totalHostMemAllocation.fetch_add(s, std::memory_order_relaxed);
+      }
+      else{
+        T* tmpPtr = nullptr;
+        TryCudaTen(cudaMallocAsync((void**)&tmpPtr, s, *this->stream));
+        this->deviceData.reset(tmpPtr);
+        this->totalDeviceMemAllocation.fetch_add(s, std::memory_order_relaxed);
+      }
+    }
+  }
+  
+  //destroys data pointers and updates global atomics, smart pointers handle proper deletion automatically
+  void deallocate(){
+    if(this->size <= 0){
+      return;
+    }
+    if(this->device == TensorLocation::CPU){
+      if(this->hostData == nullptr){
+        return;
+      }
+      if constexpr(ALLOC == AllocationType::DYNAMIC){ //tracking page-locked host memory only
+        this->totalHostMemAllocation.fetch_sub(this->getMemUsage(), std::memory_order_relaxed);
+      }
+      this->hostData = nullptr; //smart pointers automatically invoke deletion
+      this->deviceData = nullptr;
+    }
+    else{
+      if(this->deviceData == nullptr){
+        return;
+      }
+      this->totalDeviceMemAllocation.fetch_sub(this->getMemUsage(), std::memory_order_relaxed);
+      this->deviceData = nullptr;
+      this->hostData = nullptr;
+    }
+  }
+  
+  //same type copy helper
+  template <AllocationType A>
+  void copy(const Tensor<T, A>& r){
+
+    if(this->size != r.size){
+      this->deallocate();
+      this->size = r.size;
+      this->n = r.n;
+      this->dimensions = r.dimensions;
+      this->allocate();
+    }
+
+    if(r.device == TensorLocation::CPU){ //r on cpu
+      if(this->device == TensorLocation::CPU){ //both on cpu
+        memcpy(this->hostData.get(), r.hostData.get(), this->getMemUsage());
+      }
+      else if constexpr(A == AllocationType::DYNAMIC){ //this on gpu, r dynamic tensor on cpu
+        TryCudaTen(cudaMemcpyAsync(this->deviceData.get(), r.hostData.get(), this->getMemUsage(), cudaMemcpyHostToDevice, *r.stream));
+      }
+      else{ //this on gpu, r on cpu
+        TryCudaTen(cudaMemcpy(this->deviceData.get(), r.hostData.get(), this->getMemUsage(), cudaMemcpyHostToDevice));
+      }
+    }
+    else if constexpr(A == AllocationType::DYNAMIC){ //r dynamic tensor on gpu
+      if(this->device == TensorLocation::CPU){  //this on cpu, r dynamic tensor on gpu
+        TryCudaTen(cudaMemcpyAsync(this->hostData.get(), r.deviceData.get(), this->getMemUsage(), cudaMemcpyDeviceToHost, *r.stream));
+      }
+      else{ //this on gpu, r dynamic tensor on gpu
+        TryCudaTen(cudaMemcpyAsync(this->deviceData.get(), r.deviceData.get(), this->getMemUsage(), cudaMemcpyDeviceToDevice, *r.stream));
+      }
+    }
+    else{
+      if(this->device == TensorLocation::CPU){ //this on cpu, r on gpu
+        TryCudaTen(cudaMemcpy(this->hostData.get(), r.deviceData.get(), this->getMemUsage(), cudaMemcpyDeviceToHost));
+      }
+      else{ //this on gpu, r on gpu
+        TryCudaTen(cudaMemcpy(this->deviceData.get(), r.deviceData.get(), this->getMemUsage(), cudaMemcpyDeviceToDevice));
+      }
+      //mfw im afraid to write monotonous comments for funsies because it will look like i used ai 8|:(
+    }
+  }
+  //copy helper for float-half conversion, requires both devices in GPU
+  //allocation type can be ignored completely
+  template <typename U>
+  std::enable_if_t<!std::is_same_v<T, U>, void>
+  copy(const Tensor<U, ALLOC>& r){
+    if(this->size != r.size){  //resets this and changes members
+      this->deallocate();
+      this->size = r.size;
+      this->dimensions = r.dimensions;
+      this->n = r.n;
+      this->allocate();
+    }
+
+    if(this->device != r.device || this->device != TensorLocation::GPU){
+      throw std::runtime_error("Half to float conversion must have both tensors in gpu - T != U copy helper");
+    }
+    
+    if constexpr(std::is_floating_point_v<T>){
+      size_t s = this->size;
+      const int thCount = 256, blocks = (s + thCount - 1) / thCount; //floors
+      dim3 blockDim(thCount), gridDim(blocks);
+      T* dst = this->deviceData.get();
+      U* src = r.deviceData.get();
+      HalfToFullKernel<<<gridDim, blockDim, 0, *r.stream>>>(dst, src, s);
+    }
+    else{
+      size_t s = this->size;
+      const int thCount = 256, blocks = (s + thCount - 1) / thCount; //floors
+      dim3 blockDim(thCount), gridDim(blocks);
+      T* dst = this->deviceData.get();
+      U* src = r.deviceData.get();
+      FullToHalfKernel<<<gridDim, blockDim, 0, *r.stream>>>(dst, src, s);
+    }
+  }
+
 };
+
+//deduction guides for copy constructor
+template <typename T, AllocationType ALLOC>
+Tensor(const Tensor<T, ALLOC>&) -> Tensor<T, ALLOC>;
+
+//deduction guide for move constructor
+template <typename T, AllocationType ALLOC>
+Tensor(Tensor<T, ALLOC>&&) -> Tensor<T, ALLOC>;
 
 #endif
